@@ -1,0 +1,49 @@
+{
+  "success": true,
+  "input_file": "Humanizer\\test_ai_document.txt",
+  "output_file": "Humanizer\\test_ai_document_humanized.txt",
+  "iterations_run": 3,
+  "final_ai_score": 7.9,
+  "target_score": 10.0,
+  "history": [
+    {
+      "iteration": 1,
+      "score": 19.2,
+      "metrics": {
+        "ai_score": 19.2,
+        "perplexity": 28.5,
+        "burstiness": 430.9,
+        "smooth_frac": 0.0,
+        "ai_tells": 6,
+        "sentences": 28,
+        "ttr": 0.58
+      }
+    },
+    {
+      "iteration": 2,
+      "score": 19.3,
+      "metrics": {
+        "ai_score": 19.3,
+        "perplexity": 13.4,
+        "burstiness": 453.5,
+        "smooth_frac": 0.0,
+        "ai_tells": 3,
+        "sentences": 36,
+        "ttr": 0.56
+      }
+    },
+    {
+      "iteration": 3,
+      "score": 7.9,
+      "metrics": {
+        "ai_score": 7.9,
+        "perplexity": 34.0,
+        "burstiness": 349.3,
+        "smooth_frac": 0.0,
+        "ai_tells": 3,
+        "sentences": 34,
+        "ttr": 0.58
+      }
+    }
+  ]
+}
