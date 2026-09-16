@@ -171,23 +171,44 @@ def _apply_run_style(run, rs: RunStyle) -> None:
 
 
 def _tag_runs(para) -> tuple[str, dict[str, dict]]:
-    """Encodes styled runs as semantic tags and protected placeholders."""
+    """Encodes styled runs as semantic tags and protected placeholders.
+
+    Runs containing inline drawings, math equations, or embedded objects
+    are stored in the vault as locked elements regardless of whether they
+    carry visible text.  This prevents their XML from being silently lost
+    when _reconstruct_runs clears and rewrites paragraph runs.
+    """
     tagged_parts = []
     vault: dict[str, dict] = {}
     counter = 0
 
+    _COMPLEX_MARKERS = ("<w:drawing", "<w:pict", "<m:oMath", "<w:object")
+
     for run in para.runs:
         t = run.text
+        xml_str = run._element.xml
+        has_complex = any(m in xml_str for m in _COMPLEX_MARKERS)
+
+        # Runs with no visible text but complex content must be preserved.
+        if not t and has_complex:
+            tag = f"__RUN_LOCKED_{counter}__"
+            vault[tag] = {
+                "text": "",
+                "style": _extract_run_style(run),
+                "locked": True,
+                "_elem": run._element,  # keep the real lxml element
+            }
+            tagged_parts.append(tag)
+            counter += 1
+            continue
+
         if not t:
             continue
-        xml_str = run._element.xml
-        has_complex = (
-            "<w:drawing" in xml_str
-            or "<w:pict" in xml_str
-            or "<m:oMath" in xml_str
-            or "<w:object" in xml_str
+
+        is_cite = bool(
+            run.font and (run.font.superscript or run.font.subscript)
+            or re.fullmatch(r"\[[a-zA-Z0-9,\-\s]{1,15}\]", t.strip())
         )
-        is_cite = bool(run.font and (run.font.superscript or run.font.subscript) or re.fullmatch(r"\[[a-zA-Z0-9,\-\s]{1,15}\]", t.strip()))
 
         if has_complex or is_cite:
             tag = f"__RUN_LOCKED_{counter}__"
@@ -253,23 +274,40 @@ def _reconstruct_runs(para, rewritten_text: str, vault: dict[str, dict], base_st
     # Strip any stray unclosed tags
     clean_segments = []
     for s_txt, s_style in segments:
-        clean_txt = re.sub(r"</?[bi|b|i]\b[^>]*>", "", s_txt)
+        clean_txt = re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", s_txt)
         if clean_txt:
             clean_segments.append((clean_txt, s_style))
 
     # If no segments, write plain
     if not clean_segments:
-        clean_segments = [(re.sub(r"</?[bi|b|i]\b[^>]*>", "", rewritten_text), base_style)]
+        clean_segments = [(re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", rewritten_text), base_style)]
 
-    # Clear existing runs in paragraph
+    # Collect complex-object elements (drawings, math, etc.) that must be
+    # re-attached verbatim — clearing their run's text would destroy them.
+    complex_elems = [
+        v["_elem"]
+        for v in vault.values()
+        if v.get("locked") and "_elem" in v
+    ]
+
+    # Clear text-bearing runs.  Runs that own a complex element are detached
+    # from the paragraph now and will be re-appended at the end.
+    p_elem = para._element
+    for elem in complex_elems:
+        p_elem.remove(elem)
     for r in para.runs:
         r.text = ""
-    # Add new runs with precise styling
+
+    # Add rebuilt text runs with precise styling
     for seg_text, st in clean_segments:
         if not seg_text:
             continue
         new_run = para.add_run(seg_text)
         _apply_run_style(new_run, st)
+
+    # Re-append preserved complex-object runs at the end of the paragraph
+    for elem in complex_elems:
+        p_elem.append(elem)
 
 
 def should_skip_paragraph(para) -> bool:

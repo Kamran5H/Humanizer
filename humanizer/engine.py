@@ -38,6 +38,13 @@ from humanizer.rules import (
     apply_contractions,
     fix_grammar,
 )
+try:
+    from nlp_enhance import fix_encoding as _fix_encoding, is_faithful as _is_faithful
+except Exception:
+    def _fix_encoding(t: str) -> str:  # type: ignore[misc]
+        return t
+    def _is_faithful(src: str, out: str, **kwargs) -> bool:  # type: ignore[misc]
+        return True
 
 logger = logging.getLogger(__name__)
 
@@ -451,6 +458,8 @@ def _roughen_smooth_sentences(text: str, cfg: HumanizerConfig) -> str:
 
 def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
     """Persona-driven LLM rewrite with acceptance loop and guided feedback."""
+    # Repair broken unicode before any processing
+    text = _fix_encoding(text)
     stripped = text.strip()
     if not stripped:
         return text
@@ -488,6 +497,11 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
             if cand_words < int(cfg.min_length_ratio * text_words) or cand_words > int(1.55 * text_words):
                 continue
 
+        # Semantic fidelity guard: reject rewrites that lost/distorted content
+        if not is_short and not _is_faithful(text, cand):
+            logger.debug("Candidate rejected by fidelity guard (content drift).")
+            continue
+
         if budget == 1:
             return cand
 
@@ -512,6 +526,8 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
 
 def humanize_paragraph_rules(text: str, cfg: HumanizerConfig) -> str:
     """Fast offline rule pipeline."""
+    # Repair broken unicode before any processing
+    text = _fix_encoding(text)
     if not text.strip():
         return text
     text, vault = lock_elements(text)
@@ -602,12 +618,19 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
 
     workers = max(1, min(cfg.parallel_workers, total_paras))
 
+    # Store vaults keyed by paragraph index so reconstruction uses the
+    # same tag→style mapping that was produced during the forward pass.
+    vault_map: dict[int, dict] = {}
+    vault_lock = threading.Lock()
+
     def _process_para(idx: int) -> tuple[int, str]:
         cached = ckpt.get(idx)
+        p = paras_to_process[idx]
+        tagged_text, vault = _tag_runs(p)
+        with vault_lock:
+            vault_map[idx] = vault
         if cached is not None:
             return idx, cached
-        p = paras_to_process[idx]
-        tagged_text, _ = _tag_runs(p)
         if not tagged_text.strip():
             return idx, p.text
 
@@ -640,12 +663,13 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
                 done_count += 1
                 cfg.report_progress(done_count, total_paras, f"DOCX paragraph {done_count}/{total_paras} humanized")
 
-    # Reconstruct all paragraphs in order
+    # Reconstruct all paragraphs in order using the vaults captured during the
+    # forward pass — NOT a second _tag_runs call on (now-modified) paragraphs.
     cfg.report_progress(total_paras, total_paras, "Reconstructing run-level styles and formatting...")
     for idx, p in enumerate(paras_to_process):
         if idx in results_map:
             base_style = _extract_run_style(p.runs[0]) if p.runs else RunStyle()
-            _, vault = _tag_runs(p)
+            vault = vault_map.get(idx, {})
             _reconstruct_runs(p, results_map[idx], vault, base_style)
 
     if not (cfg.cancel_event and cfg.cancel_event.is_set()):

@@ -31,7 +31,7 @@ from humanizer.engine import (
     build_stealth_prompt,
 )
 from humanizer.lint import lint_text, is_clean, readability
-from humanizer.providers import call_llm_pool
+from humanizer.providers import call_llm_pool, load_keys_if_needed, reset_cooldowns
 from humanizer.rules import (
     DEFAULT_SUBSTITUTIONS,
     DEFAULT_CONTRACTIONS,

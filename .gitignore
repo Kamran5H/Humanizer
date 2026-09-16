@@ -1,0 +1,20 @@
+# Python caches
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# IDE & local agent config
+.claude/
+.vscode/
+.idea/
+*.log
+
+# OS
+.DS_Store
+Thumbs.db

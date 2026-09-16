@@ -42,7 +42,13 @@ _KEYS_LOADED = False
 _FREE_PROVIDER_REGISTRY: list[tuple[str, str, str, str]] = [
     # (env_var, base_url, default_models_csv, display_name)
     ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash,gemini-2.5-flash-lite", "Gemini"),
+    ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1", "llama-3.3-70b", "Cerebras"),
     ("SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", "SambaNova"),
+    ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "deepseek/deepseek-chat:free,meta-llama/llama-3.3-70b-instruct:free,mistralai/mistral-small-24b-instruct-2501:free", "OpenRouter"),
+    ("GITHUB_TOKEN", "https://models.inference.ai.azure.com", "gpt-4o-mini,Meta-Llama-3.3-70B-Instruct", "GitHub Models"),
+    ("TOGETHER_API_KEY", "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo", "Together"),
+    ("MISTRAL_API_KEY", "https://api.mistral.ai/v1", "mistral-small-latest", "Mistral"),
+    ("DEEPINFRA_API_KEY", "https://api.deepinfra.com/v1/openai", "meta-llama/Meta-Llama-3.3-70B-Instruct", "DeepInfra"),
     ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile,llama-3.1-8b-instant", "Groq"),
 ]
 
@@ -170,6 +176,8 @@ def _build_pool(primary_base: Optional[str] = None) -> list[dict]:
     if base:
         key = os.environ.get("STEALTH_API_KEY", "").strip() or "ollama"
         models_raw = os.environ.get("STEALTH_MODEL", "llama-3.3-70b-versatile,llama-3.1-8b-instant")
+        if "groq.com" in base and any("/" in m for m in models_raw.split(",")):
+            models_raw = "llama-3.3-70b-versatile,llama-3.1-8b-instant"
         for m in [x.strip() for x in models_raw.split(",") if x.strip()]:
             add("Primary", base, m, key)
 
@@ -258,12 +266,13 @@ def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperatur
     now = time.time()
     available = [e for e in pool if now >= _OAI_COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0)]
     if not available:
-        available = pool[:1]
+        available = sorted(pool, key=lambda e: _OAI_COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0))[:2]
 
     def _sort_key(ep):
         base = ep["base_url"]
         is_local = "localhost" in base or "127.0.0.1" in base
-        return 0.0 if is_local else _provider_wait(base)
+        # Put local fallback last unless all cloud providers are cooling down
+        return 999.0 if is_local else _provider_wait(base)
 
     available = sorted(available, key=_sort_key)
     last_err: Optional[Exception] = None

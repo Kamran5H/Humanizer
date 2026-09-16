@@ -76,7 +76,8 @@ _PTB_TO_WN = {
 }
 
 _LOCK_RE: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"__RUN_PLACEHOLDER_\d+__"), "PLACEHOLDER"),
+    (re.compile(r"__RUN_(?:LOCKED|PLACEHOLDER)_\d+__"), "PLACEHOLDER"),
+    (re.compile(r"</?(?:bi|b|i)(?:\s+id=['\"]\d+['\"])?>", re.IGNORECASE), "TAG"),
     (re.compile(r"\[[a-zA-Z0-9,\-\s]{1,15}\]"), "CITATION"),
     (re.compile(r"[⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻ₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎ₐₑₕᵢⱼₖₗₘₙₒₚᵣₛₜᵤᵥₓ]+"), "SUP_SUB"),
     (re.compile(r"\([A-Z][^()]{1,60}(?:19|20)\d{2}[^()]{0,30}\)"), "CITATION"),
@@ -408,13 +409,32 @@ def apply_contractions(text: str, cfg: HumanizerConfig) -> str:
     return text
 
 
+_A_OK_VOWEL = re.compile(r"^(uni|use|user|usu|euro|eu|one|once|ubiq|unique|unicorn|unit|univ|ufo)", re.IGNORECASE)
+_AN_OK_CONS = re.compile(r"^(hour|honest|honou?r|heir|x-?ray|mri|fbi)", re.IGNORECASE)
+
+
 def fix_grammar(text: str) -> str:
-    """Repair common punctuation, whitespace, and grammatical slips."""
+    """Repair common punctuation, whitespace, and grammatical slips with phonetic exceptions."""
     text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     text = re.sub(r"([(\[{])\s+", r"\1", text)
     text = re.sub(r"\s+([)\]}])", r"\1", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
-    text = re.sub(r"\b(a)\s+([aeiouAEIOU]\w+)", r"an \2", text)
-    text = re.sub(r"\b(an)\s+([^aeiouAEIOU\s\W]\w+)", r"a \2", text)
+
+    def _fix_a(m: re.Match) -> str:
+        tok, word = m.group(1), m.group(2)
+        if word.startswith("__LOCK_") or _A_OK_VOWEL.match(word):
+            return m.group(0)
+        prefix = "An" if tok[:1].isupper() else "an"
+        return f"{prefix} {word}"
+
+    def _fix_an(m: re.Match) -> str:
+        tok, word = m.group(1), m.group(2)
+        if word.startswith("__LOCK_") or _AN_OK_CONS.match(word):
+            return m.group(0)
+        prefix = "A" if tok[:1].isupper() else "a"
+        return f"{prefix} {word}"
+
+    text = re.sub(r"\b([Aa])\s+([aeiouAEIOU]\w+)", _fix_a, text)
+    text = re.sub(r"\b([Aa]n)\s+([bcdfgjklmnpqrstvwxzBCDFGJKLMNPQRSTVWXZ]\w+)", _fix_an, text)
     text = re.sub(r"\b(the|a|an|and|or|in|on|at|to)\s+\1\b", r"\1", text, flags=re.IGNORECASE)
     return text
