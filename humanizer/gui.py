@@ -213,6 +213,9 @@ class HumanizerApp(tk.Tk):
         self.btn_score = ttk.Button(tb, text="Check Score", style="Ghost.TButton", command=self._score_input)
         self.btn_score.pack(side="left", padx=(0, 8))
 
+        self.btn_web = ttk.Button(tb, text="🌐 Web Studio", style="Ghost.TButton", command=self._open_web_studio)
+        self.btn_web.pack(side="left", padx=(0, 8))
+
         self.lbl_score_badge = tk.Label(tb, text="AI Score: —", font=("Segoe UI", 10, "bold"), fg=self.PAL["muted"], bg=self.PAL["bg"])
         self.lbl_score_badge.pack(side="right", padx=8)
 
@@ -272,24 +275,27 @@ class HumanizerApp(tk.Tk):
         )
         self.lbl_status.pack(fill="x", side="bottom")
 
+    def _open_web_studio(self) -> None:
+        import threading
+        import webbrowser
+        threading.Thread(target=lambda: webbrowser.open("http://127.0.0.1:8000"), daemon=True).start()
+        self.lbl_status.config(text="Launched Web Studio at http://127.0.0.1:8000")
+
     def _open_file(self) -> None:
-        p = filedialog.askopenfilename(filetypes=[("Documents", "*.docx *.txt *.pdf")])
+        p = filedialog.askopenfilename(filetypes=[("Documents", "*.docx *.txt *.pdf *.md")])
         if not p:
             return
         path = Path(p)
         self._loaded_path = path
-        if path.suffix.lower() == ".docx":
-            import docx
-            doc = docx.Document(str(path))
-            text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+        try:
+            from humanizer.document import extract_text_from_file
+            text = extract_text_from_file(path)
             self.txt_in.delete("1.0", "end")
             self.txt_in.insert("1.0", text)
-            self.lbl_status.config(text=f"Loaded Word Document: {path.name}")
-        else:
-            text = path.read_text(encoding="utf-8", errors="replace")
-            self.txt_in.delete("1.0", "end")
-            self.txt_in.insert("1.0", text)
-            self.lbl_status.config(text=f"Loaded text file: {path.name}")
+            self.lbl_status.config(text=f"Loaded {path.suffix.upper()} Document: {path.name}")
+        except Exception as e:
+            messagebox.showerror("File Error", f"Failed to load document: {e}")
+            return
         self._score_input()
 
     def _save_file(self) -> None:

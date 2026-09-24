@@ -23,7 +23,7 @@ from humanizer.config import HumanizerConfig
 logger = logging.getLogger(__name__)
 
 # State persistence directory
-_STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local") / "humanizer_pro"
+_STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "humanizer_pro"
 _STATE_FILE = _STATE_DIR / "provider_state.json"
 
 _THROTTLE_LOCK = threading.Lock()
@@ -191,7 +191,8 @@ def _build_pool(primary_base: Optional[str] = None) -> list[dict]:
 
 
 def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, api_key: str, timeout: float = 90.0) -> str:
-    url = base_url.rstrip("/") + "/chat/completions"
+    clean_base = base_url.rstrip("/")
+    url = clean_base if clean_base.endswith("/chat/completions") else clean_base + "/chat/completions"
     payload = {
         "model": model,
         "temperature": temperature,
@@ -240,9 +241,31 @@ def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, a
 def _handle_error(e: BaseException, base_url: str, model: str, provider: str) -> None:
     if isinstance(e, urllib.error.HTTPError):
         code = e.code
+        err_body = ""
+        try:
+            err_body = e.read().decode("utf-8", errors="replace")
+        except Exception:
+            pass
+
         if code == 429:
+            # Check if this is a daily quota / TPD exhaustion rather than a temporary RPM limit
+            is_daily = any(t in err_body.lower() for t in ("resource_exhausted", "quota metric", "per day", "daily", "tpd", "tokens per day"))
+            if is_daily:
+                wait = 21600.0  # 6 hours cooldown
+                if "generativelanguage.googleapis.com" in base_url or "gemini" in provider.lower():
+                    _GEMINI_EXHAUSTED_UNTIL[0] = time.time() + wait
+                _OAI_TPD_HIT.add(_ep_key(base_url, model))
+                _cool_endpoint(base_url, model, wait)
+                logger.warning(f"{provider}/{model} daily quota exhausted. Cooldown set for {wait/3600:.1f}h.")
+                return
+
             hdr = e.headers.get("retry-after")
-            wait = float(hdr) if hdr and hdr.isdigit() else 35.0
+            wait = 35.0
+            if hdr:
+                try:
+                    wait = max(5.0, min(300.0, float(hdr)))
+                except ValueError:
+                    wait = 35.0
             _cool_endpoint(base_url, model, wait)
             logger.warning(f"{provider}/{model} rate-limited. Cooldown set for {wait:.0f}s.")
             return
@@ -257,24 +280,68 @@ def _handle_error(e: BaseException, base_url: str, model: str, provider: str) ->
     _cool_endpoint(base_url, model, 15.0)
 
 
+_CALL_COUNTER = 0
+_COUNTER_LOCK = threading.Lock()
+
+
+def get_provider_status() -> list[dict]:
+    """Return live status, model list, and cooldown state for all configured providers."""
+    pool = _build_pool()
+    now = time.time()
+    result = []
+    with _STATE_LOCK:
+        for ep in pool:
+            key = _ep_key(ep["base_url"], ep["model"])
+            cd = _OAI_COOLDOWNS.get(key, 0.0)
+            is_gemini_ex = ("gemini" in ep["name"].lower() or "generativelanguage" in ep["base_url"]) and now < _GEMINI_EXHAUSTED_UNTIL[0]
+            cooling = (cd > now) or is_gemini_ex
+            remaining = max(0.0, cd - now) if cd > now else (max(0.0, _GEMINI_EXHAUSTED_UNTIL[0] - now) if is_gemini_ex else 0.0)
+            wait = _provider_wait(ep["base_url"])
+            result.append({
+                "name": ep["name"],
+                "model": ep["model"],
+                "base_url": ep["base_url"],
+                "status": "cooling_down" if cooling else ("throttled" if wait > 0.1 else "ready"),
+                "cooldown_remaining_sec": round(remaining, 1),
+                "throttle_wait_sec": round(wait, 1),
+            })
+    return result
+
+
 def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperature: float = 1.0) -> str:
-    """Execute LLM call across the provider pool with automatic failover."""
+    """Execute LLM call across the provider pool with automatic failover and load balancing."""
     pool = _build_pool()
     if not pool:
         raise RuntimeError("No LLM providers configured. Please add an API key to .keys.env")
 
     now = time.time()
-    available = [e for e in pool if now >= _OAI_COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0)]
+    available = [
+        e for e in pool
+        if now >= _OAI_COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0)
+        and not (("gemini" in e["name"].lower() or "generativelanguage" in e["base_url"]) and now < _GEMINI_EXHAUSTED_UNTIL[0])
+    ]
     if not available:
         available = sorted(pool, key=lambda e: _OAI_COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0))[:2]
+        soonest = _OAI_COOLDOWNS.get(_ep_key(available[0]["base_url"], available[0]["model"]), 0.0)
+        sleep_wait = max(0.0, min(soonest - now, 8.0))
+        if sleep_wait > 0.5:
+            time.sleep(sleep_wait)
 
-    def _sort_key(ep):
+    global _CALL_COUNTER
+    with _COUNTER_LOCK:
+        _CALL_COUNTER += 1
+        rr_offset = _CALL_COUNTER
+
+    def _sort_key(idx_ep):
+        idx, ep = idx_ep
         base = ep["base_url"]
         is_local = "localhost" in base or "127.0.0.1" in base
-        # Put local fallback last unless all cloud providers are cooling down
-        return 999.0 if is_local else _provider_wait(base)
+        wait = _provider_wait(base)
+        # Prioritize ready endpoints with zero wait, then round-robin across different providers
+        is_ready = 0.0 if wait <= 0.05 else wait
+        return (999.0 if is_local else is_ready, (idx + rr_offset) % max(1, len(available)))
 
-    available = sorted(available, key=_sort_key)
+    available = [ep for _, ep in sorted(enumerate(available), key=_sort_key)]
     last_err: Optional[Exception] = None
 
     for ep in available:
@@ -294,3 +361,4 @@ def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperatur
     if last_err is not None:
         raise last_err
     raise RuntimeError("All LLM providers in the pool failed.")
+

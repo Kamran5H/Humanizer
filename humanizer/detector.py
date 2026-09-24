@@ -77,7 +77,7 @@ _AI_TELLS_PATTERNS = [
     r"\bunleash(?:ing)? the power of\b",
     r"\bnavigating the complexities of\b",
     # Rhetorical parallelisms & synthetic transitions
-    r"\bnot only\b.*?\bbut also\b",
+    r"\bnot only\b[^.!?]{1,120}\bbut also\b",
     r"\bfirst and foremost\b",
     r"\blast but not least\b",
     r"\bin light of the fact that\b",
@@ -148,12 +148,23 @@ def _perplexity(text: str) -> Optional[float]:
     return _statistical_surprisal(text)
 
 
+_ABBREV_RE = re.compile(
+    r"\b(et al|i\.e|e\.g|Fig|Figs|Tab|Ref|Refs|eq|eqs|approx|ca|vs|vol|no|Dr|Prof|al|ed|eds)\.",
+    re.IGNORECASE,
+)
+
+
 def _sentences(text: str) -> list[str]:
+    if not text:
+        return []
+    # Protect common academic and scientific abbreviation periods from splitting
+    masked = _ABBREV_RE.sub(lambda m: m.group(1) + "\u200b", text)
     try:
         from nltk.tokenize import sent_tokenize
-        return [s for s in sent_tokenize(text) if s.strip()]
+        raw_sents = [s for s in sent_tokenize(masked) if s.strip()]
     except Exception:
-        return [s for s in re.split(r"(?<=[.!?])\s+", text) if s.strip()]
+        raw_sents = [s for s in re.split(r"(?<=[.!?])\s+", masked) if s.strip()]
+    return [s.replace("\u200b", ".").strip() for s in raw_sents if s.strip()]
 
 
 def _sigmoid(x: float) -> float:
@@ -186,13 +197,17 @@ def score_text(text: str) -> dict:
     sent_lens = [len(s.split()) for s in sents]
     mean_len = sum(sent_lens) / max(1, len(sent_lens))
     len_var = sum((l - mean_len) ** 2 for l in sent_lens) / max(1, len(sent_lens) - 1) if len(sent_lens) > 1 else 0.0
-    len_std = math.sqrt(len_var)
+    len_std = math.sqrt(max(0.0, len_var))
     cv_len = (len_std / mean_len) if mean_len > 0 else 0.0
 
-    if len(ppls) >= 2:
+    if len(sents) <= 1 or len(words) < 20:
+        # Single-sentence or short paragraphs cannot compute variance reliably;
+        # set neutral burstiness baseline to avoid false-positive AI spikes on headings
+        burstiness = _BUR_MID
+    elif len(ppls) >= 2:
         mean_ppl = sum(ppls) / len(ppls)
         ppl_var = sum((p - mean_ppl) ** 2 for p in ppls) / (len(ppls) - 1)
-        ppl_std = math.sqrt(ppl_var)
+        ppl_std = math.sqrt(max(0.0, ppl_var))
         burstiness = ppl_std + (cv_len * 25.0)
     else:
         burstiness = cv_len * 45.0

@@ -15,6 +15,18 @@ env/
 .idea/
 *.log
 
+# Environment & Secrets
+.env
+.env.*
+*.env
+
+# Outputs & Test Artifacts
+*.docx
+*.pdf
+output/
+outputs/
+scratch/
+
 # OS
 .DS_Store
 Thumbs.db

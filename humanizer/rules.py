@@ -86,32 +86,76 @@ _LOCK_RE: list[tuple[re.Pattern[str], str]] = [
     (re.compile(r"www\.\S+"), "URL"),
     (re.compile(r"doi:\s*10\.\S+", re.IGNORECASE), "DOI"),
     (re.compile(r"\b(?:p|n|r|r²|R²|β|α|df|F|t|χ²|OR|RR|HR)\s*[=<>≤≥]\s*[\d.]+"), "STAT"),
-    (re.compile(r"\b\d[\d,.]*\s*(?:%|mg|kg|ml|mL|μg|μL|mmol|cm|mm|nm|kb|Mb|GB|TB)\b"), "STAT"),
+    (re.compile(
+        r"\b\d[\d,.]*\s*(?:"
+        r"[mµu]?W\s*cm[-⁻]?[2²]|[mµu]?A\s*cm[-⁻]?[2²]|"
+        r"[kMGT]?W\s*kg[-⁻]?[1¹]|[kMGT]?Wh\s*kg[-⁻]?[1¹]|J\s*g[-⁻]?[1¹]|"
+        r"%|mg|kg|g|ml|mL|μg|μL|mmol|mol|M|mM|μM|nM|cm|mm|nm|μm|pm|km|m|"
+        r"kb|Mb|GB|TB|mV|V|kV|eV|keV|MeV|K|°C|°F|W|kW|mW|"
+        r"mA|A|mAh|Ah|Wh|kWh|J|kJ|Pa|kPa|MPa|GPa|bar|mbar|Torr|atm|Hz|kHz|MHz|GHz|"
+        r"s|ms|μs|ns|ps|fs|min|h|hr|rpm)\b"
+    ), "STAT"),
     (re.compile(r"\$[^$]+\$"), "EQUATION"),
     (re.compile(r"\\[a-zA-Z]+\{[^}]*\}"), "LATEX"),
 ]
 
 
 def lock_elements(text: str) -> tuple[str, dict[str, str]]:
+    """Single non-overlapping pass locking protected elements without cascade bugs."""
     vault: dict[str, str] = {}
-    counter = [0]
+    if not text:
+        return text, vault
 
-    def make_token(label: str, span: str) -> str:
-        tok = f"__LOCK_{label}_{counter[0]}__"
-        counter[0] += 1
-        vault[tok] = span
-        return tok
+    # 1. Collect all candidate spans across all patterns on the original text
+    spans: list[tuple[int, int, str]] = []
+    for pat, label in _LOCK_RE:
+        for m in pat.finditer(text):
+            if m.end() > m.start():
+                spans.append((m.start(), m.end(), label))
 
-    for pattern, label in _LOCK_RE:
-        def replacer(m: re.Match[str], lbl: str = label) -> str:
-            return make_token(lbl, m.group(0))
-        text = pattern.sub(replacer, text)
-    return text, vault
+    if not spans:
+        return text, vault
+
+    # 2. Sort spans: start ascending, length descending (longest match preferred)
+    spans.sort(key=lambda x: (x[0], -(x[1] - x[0])))
+
+    # 3. Resolve overlaps: keep outer / merge overlapping intervals
+    merged: list[tuple[int, int, str]] = []
+    for s, e, lbl in spans:
+        if not merged:
+            merged.append((s, e, lbl))
+        else:
+            prev_s, prev_e, prev_lbl = merged[-1]
+            if s >= prev_e:
+                merged.append((s, e, lbl))
+            else:
+                if e > prev_e:
+                    merged[-1] = (prev_s, e, prev_lbl)
+
+    # 4. Replace right-to-left so string indices remain stable
+    counter = 0
+    out = text
+    for s, e, lbl in reversed(merged):
+        tok = f"__LOCK_{lbl}_{counter}__"
+        counter += 1
+        vault[tok] = text[s:e]
+        out = out[:s] + tok + out[e:]
+
+    return out, vault
 
 
 def unlock_elements(text: str, vault: dict[str, str]) -> str:
-    for tok, orig in vault.items():
-        text = text.replace(tok, orig)
+    """Safely restore locked tokens using multi-pass fixed-point expansion."""
+    if not text or not vault:
+        return text
+    for _ in range(5):
+        changed = False
+        for tok, orig in vault.items():
+            if tok in text:
+                text = text.replace(tok, orig)
+                changed = True
+        if not changed:
+            break
     return text
 
 
@@ -410,26 +454,35 @@ def apply_contractions(text: str, cfg: HumanizerConfig) -> str:
 
 
 _A_OK_VOWEL = re.compile(r"^(uni|use|user|usu|euro|eu|one|once|ubiq|unique|unicorn|unit|univ|ufo)", re.IGNORECASE)
-_AN_OK_CONS = re.compile(r"^(hour|honest|honou?r|heir|x-?ray|mri|fbi)", re.IGNORECASE)
+_AN_OK_CONS = re.compile(
+    r"^(hour|honest|honou?r|heir|x-?ray|mri|fbi|"
+    r"[FHLMNRSX][A-Z0-9]+|RNA|SEM|XRD|XPS|NMR|NMC|STEM|FTIR|AFM|LCD|LED|HIV|URL)\b",
+    re.IGNORECASE,
+)
 
 
 def fix_grammar(text: str) -> str:
     """Repair common punctuation, whitespace, and grammatical slips with phonetic exceptions."""
+    # Clean leading punctuation if a leading phrase was stripped
+    text = re.sub(r"^\s*[,;:]\s*", "", text)
+    text = re.sub(r"([.!?])\s*[,;:]\s*", r"\1 ", text)
     text = re.sub(r"\s+([,.;:!?])", r"\1", text)
     text = re.sub(r"([(\[{])\s+", r"\1", text)
     text = re.sub(r"\s+([)\]}])", r"\1", text)
+    text = re.sub(r",\s*,+", ", ", text)
+    text = re.sub(r"\.{2,}", ".", text)
     text = re.sub(r"[ \t]{2,}", " ", text)
 
     def _fix_a(m: re.Match) -> str:
         tok, word = m.group(1), m.group(2)
-        if word.startswith("__LOCK_") or _A_OK_VOWEL.match(word):
+        if word.startswith(("__LOCK_", "__RUN_")) or _A_OK_VOWEL.match(word):
             return m.group(0)
         prefix = "An" if tok[:1].isupper() else "an"
         return f"{prefix} {word}"
 
     def _fix_an(m: re.Match) -> str:
         tok, word = m.group(1), m.group(2)
-        if word.startswith("__LOCK_") or _AN_OK_CONS.match(word):
+        if word.startswith(("__LOCK_", "__RUN_")) or _AN_OK_CONS.match(word):
             return m.group(0)
         prefix = "A" if tok[:1].isupper() else "a"
         return f"{prefix} {word}"
@@ -437,4 +490,8 @@ def fix_grammar(text: str) -> str:
     text = re.sub(r"\b([Aa])\s+([aeiouAEIOU]\w+)", _fix_a, text)
     text = re.sub(r"\b([Aa]n)\s+([bcdfgjklmnpqrstvwxzBCDFGJKLMNPQRSTVWXZ]\w+)", _fix_an, text)
     text = re.sub(r"\b(the|a|an|and|or|in|on|at|to)\s+\1\b", r"\1", text, flags=re.IGNORECASE)
-    return text
+
+    # Capitalize start of text and start of sentences
+    text = text.strip()
+    text = re.sub(r"(^|[.!?]\s+)([a-z])", lambda m: m.group(1) + m.group(2).upper(), text)
+    return text.strip()

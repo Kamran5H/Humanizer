@@ -45,6 +45,7 @@ from humanizer.rules import (
 )
 from humanizer.cli import main as cli_main
 from humanizer.gui import HumanizerApp, launch_gui
+from humanizer.web import launch_web
 
 # Legacy alias compatibility
 humanize_paragraph_gemini_stealth = humanize_paragraph_stealth
@@ -53,6 +54,15 @@ get_detector = lambda: sys.modules.get("humanizer.detector") or sys.modules.get(
 
 if __name__ == "__main__":
     if len(sys.argv) > 1:
-        sys.exit(cli_main())
+        if "--web" in sys.argv:
+            sys.argv.remove("--web")
+            launch_web()
+        elif "--gui" in sys.argv:
+            sys.argv.remove("--gui")
+            launch_gui()
+        else:
+            sys.exit(cli_main())
     else:
-        launch_gui()
+        # Default launcher: Modern Web Studio with auto-browser opening
+        launch_web()
+

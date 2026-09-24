@@ -11,10 +11,12 @@ from humanizer.engine import (
     humanize_paragraph_stealth,
     humanize_paragraph_rules,
 )
+from humanizer.document import extract_text_from_file, extract_text_from_pdf
 from humanizer.lint import lint_text, is_clean, readability
-from humanizer.providers import call_llm_pool
+from humanizer.providers import call_llm_pool, get_provider_status, reset_cooldowns
+from humanizer.web import launch_web
 
-__version__ = "5.0.0"
+__version__ = "5.1.0"
 __all__ = [
     "HumanizerConfig",
     "score_text",
@@ -25,8 +27,13 @@ __all__ = [
     "humanize_docx",
     "humanize_paragraph_stealth",
     "humanize_paragraph_rules",
+    "extract_text_from_file",
+    "extract_text_from_pdf",
     "lint_text",
     "is_clean",
     "readability",
     "call_llm_pool",
+    "get_provider_status",
+    "reset_cooldowns",
+    "launch_web",
 ]

@@ -70,7 +70,8 @@ NUMISH = re.compile(r"[A-Za-z0-9()\u00b7]*\d[A-Za-z0-9()\u00b7+\-\u2212/.%^]*")
 FORMULA = re.compile(r"\b(?:[A-Z][a-z]?){2,}\b")
 # bare ions
 ION = re.compile(r"\bOH[\-\u2212]|\bH\+|\be[\-\u2212]")
-PROTECT_PATTERNS = [GLOSSARY_RE, CITATION, NUMISH, ION, FORMULA]
+RUN_LOCKED = re.compile(r"__RUN_LOCKED_\d+__")
+PROTECT_PATTERNS = [RUN_LOCKED, GLOSSARY_RE, CITATION, NUMISH, ION, FORMULA]
 
 SENT_SPLIT = re.compile(r"(?<=[.!?])\s+(?=[A-Z(])")
 ABBR = ("et al.", "e.g.", "i.e.", "vs.", "Fig.", "Eq.", "Ref.", "cf.", "approx.")
@@ -306,24 +307,42 @@ def _render_bar(current: int, total: int, width: int = 24) -> None:
 
 def run_docx(src, dst):
     import docx
+    try:
+        from humanizer.document import _tag_runs, _reconstruct_runs, _extract_run_style, iter_document_paragraphs
+    except Exception:
+        _tag_runs = None
+
     d = docx.Document(src)
     agg = {"ok": 0, "kept": 0}
     samples = []
-    paras_to_process = [p for p in d.paragraphs if not _skip_paragraph(p)]
+    all_paras = list(iter_document_paragraphs(d)) if _tag_runs else d.paragraphs
+    paras_to_process = [p for p in all_paras if not _skip_paragraph(p)]
     total = len(paras_to_process)
 
     for idx, p in enumerate(paras_to_process, 1):
         _render_bar(idx, total)
-        t = p.text
-        new, st = paraphrase_paragraph(t)
+        orig_text = p.text
+        if not orig_text.strip():
+            continue
+
+        if _tag_runs:
+            tagged_text, vault = _tag_runs(p)
+            base_style = _extract_run_style(p.runs[0]) if p.runs else None
+        else:
+            tagged_text, vault, base_style = orig_text, {}, None
+
+        new, st = paraphrase_paragraph(tagged_text)
         for k, v in st.items():
             agg[k] = agg.get(k, 0) + v
-        if new != t and p.runs:
+        if new != tagged_text and p.runs:
             if len(samples) < 3:
-                samples.append((t, new))
-            p.runs[0].text = new
-            for r in p.runs[1:]:
-                r.text = ""
+                samples.append((orig_text, new))
+            if _tag_runs and vault:
+                _reconstruct_runs(p, new, vault, base_style)
+            else:
+                p.runs[0].text = new
+                for r in p.runs[1:]:
+                    r.text = ""
 
     d.save(dst)
     return agg, samples, total

@@ -32,7 +32,7 @@ CAPTION_LINE = re.compile(r"^\s*(Figure|Fig\.|Table)\s*\d", re.IGNORECASE)
 
 class Checkpoint:
     """Per-session persistent state for a humanize run."""
-    DIR = Path(os.environ.get("LOCALAPPDATA") or Path.home() / "AppData/Local") / "humanizer_pro" / "sessions"
+    DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "humanizer_pro" / "sessions"
 
     def __init__(
         self,
@@ -212,7 +212,12 @@ def _tag_runs(para) -> tuple[str, dict[str, dict]]:
 
         if has_complex or is_cite:
             tag = f"__RUN_LOCKED_{counter}__"
-            vault[tag] = {"text": t, "style": _extract_run_style(run), "locked": True}
+            vault[tag] = {
+                "text": t,
+                "style": _extract_run_style(run),
+                "locked": True,
+                "_elem": run._element if has_complex else None,
+            }
             tagged_parts.append(tag)
             counter += 1
         elif run.bold and run.italic:
@@ -240,74 +245,103 @@ def _tag_runs(para) -> tuple[str, dict[str, dict]]:
 
 
 def _reconstruct_runs(para, rewritten_text: str, vault: dict[str, dict], base_style: RunStyle) -> None:
-    """Clears and rebuilds paragraph runs faithfully preserving all inline styles."""
-    # First restore locked placeholders
-    locked_tokens = [k for k, v in vault.items() if v.get("locked")]
-    if locked_tokens:
-        for tok in locked_tokens:
-            val = vault[tok]["text"]
-            rewritten_text = rewritten_text.replace(tok, val)
+    """Clears and rebuilds paragraph runs faithfully preserving all inline styles,
+    complex elements (drawings, math equations), and citations in exact sequential position."""
+    p_elem = para._element
 
-    # Parse semantic tags: <b id='X'>text</b> or <i id='Y'>text</i> or <bi id='Z'>text</bi>
-    tag_re = re.compile(r"<(b|i|bi)\s+id=['\"](\d+)['\"]>(.*?)</\1(?:\s+id=['\"]\2['\"])?>", re.DOTALL | re.IGNORECASE)
-    
-    segments = []
+    # 1. Collect all complex elements to preserve
+    complex_elems = {
+        v["_elem"] for v in vault.values()
+        if v.get("locked") and v.get("_elem") is not None
+    }
+
+    # 2. Cleanly detach all existing runs from the paragraph XML
+    for r in list(para.runs):
+        p_elem.remove(r._element)
+
+    attached_elems: set = set()
+    attached_tokens: set[str] = set()
+
+    # 3. Match both styled semantic tags AND locked run placeholders in sequential order
+    token_pattern = re.compile(
+        r"(<(?P<tag>b|i|bi)\s+id=['\"](?P<id>\d+)['\"]>(?P<content>.*?)</(?P=tag)(?:\s+id=['\"](?P=id)['\"])?>)|"
+        r"(?P<lock>__RUN_(?:LOCKED|PLACEHOLDER)_\d+__)",
+        re.DOTALL | re.IGNORECASE,
+    )
+
     last_idx = 0
-    for m in tag_re.finditer(rewritten_text):
-        if m.start() > last_idx:
-            plain_chunk = rewritten_text[last_idx:m.start()]
-            if plain_chunk:
-                segments.append((plain_chunk, base_style))
-        tag_type = m.group(1).lower()
-        tag_id = m.group(2)
-        tag_content = m.group(3)
-        key = f"{tag_type}_{tag_id}"
-        st = vault.get(key, {}).get("style", base_style)
-        segments.append((tag_content, st))
-        last_idx = m.end()
+    for m in token_pattern.finditer(rewritten_text):
+        start, end = m.span()
+        if start > last_idx:
+            chunk = rewritten_text[last_idx:start]
+            chunk = re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", chunk)
+            if chunk:
+                r = para.add_run(chunk)
+                _apply_run_style(r, base_style)
+
+        if m.group("lock"):
+            tok = m.group("lock")
+            attached_tokens.add(tok)
+            v = vault.get(tok, {})
+            elem = v.get("_elem")
+            if elem is not None:
+                p_elem.append(elem)
+                attached_elems.add(elem)
+            else:
+                txt = v.get("text", "")
+                st = v.get("style", base_style)
+                if txt:
+                    r = para.add_run(txt)
+                    _apply_run_style(r, st)
+        else:
+            tag_type = m.group("tag").lower()
+            tag_id = m.group("id")
+            tag_content = m.group("content")
+            clean_content = re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", tag_content)
+            key = f"{tag_type}_{tag_id}"
+            st = vault.get(key, {}).get("style", base_style)
+            if clean_content:
+                r = para.add_run(clean_content)
+                _apply_run_style(r, st)
+
+        last_idx = end
 
     if last_idx < len(rewritten_text):
         trailing = rewritten_text[last_idx:]
+        trailing = re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", trailing)
         if trailing:
-            segments.append((trailing, base_style))
+            r = para.add_run(trailing)
+            _apply_run_style(r, base_style)
 
-    # Strip any stray unclosed tags
-    clean_segments = []
-    for s_txt, s_style in segments:
-        clean_txt = re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", s_txt)
-        if clean_txt:
-            clean_segments.append((clean_txt, s_style))
+    # 4. Fallback: if no runs were added at all, write plain text
+    if not para.runs and not attached_elems:
+        plain = re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", rewritten_text)
+        if plain:
+            r = para.add_run(plain)
+            _apply_run_style(r, base_style)
 
-    # If no segments, write plain
-    if not clean_segments:
-        clean_segments = [(re.sub(r"</?(?:bi|b|i)\b[^>]*>", "", rewritten_text), base_style)]
-
-    # Collect complex-object elements (drawings, math, etc.) that must be
-    # re-attached verbatim — clearing their run's text would destroy them.
-    complex_elems = [
-        v["_elem"]
-        for v in vault.values()
-        if v.get("locked") and "_elem" in v
-    ]
-
-    # Clear text-bearing runs.  Runs that own a complex element are detached
-    # from the paragraph now and will be re-appended at the end.
-    p_elem = para._element
+    # 5. Safety: ensure any complex element not matched in text is safely attached
     for elem in complex_elems:
-        p_elem.remove(elem)
-    for r in para.runs:
-        r.text = ""
+        if elem not in attached_elems:
+            p_elem.append(elem)
+            attached_elems.add(elem)
 
-    # Add rebuilt text runs with precise styling
-    for seg_text, st in clean_segments:
-        if not seg_text:
-            continue
-        new_run = para.add_run(seg_text)
-        _apply_run_style(new_run, st)
-
-    # Re-append preserved complex-object runs at the end of the paragraph
-    for elem in complex_elems:
-        p_elem.append(elem)
+    # 6. Guaranteed Citation & Locked Text Retention:
+    # If the LLM omitted any locked text or citation token, restore it to prevent loss
+    for tok, v in vault.items():
+        if v.get("locked") and tok not in attached_tokens:
+            elem = v.get("_elem")
+            if elem is not None:
+                if elem not in attached_elems:
+                    p_elem.append(elem)
+                    attached_elems.add(elem)
+            else:
+                txt = v.get("text", "")
+                if txt:
+                    prefix = " " if not txt.startswith((" ", "[", "(", ",")) else ""
+                    r = para.add_run(f"{prefix}{txt}")
+                    _apply_run_style(r, v.get("style", base_style))
+                    attached_tokens.add(tok)
 
 
 def should_skip_paragraph(para) -> bool:
@@ -322,11 +356,93 @@ def should_skip_paragraph(para) -> bool:
     return False
 
 
-def iter_document_paragraphs(doc: Document) -> Generator:
-    for p in doc.paragraphs:
-        yield p
-    for table in doc.tables:
-        for row in table.rows:
-            for cell in row.cells:
-                for p in cell.paragraphs:
+def _iter_table_paragraphs(table, seen_p_ids: Optional[set[int]] = None) -> Generator:
+    """Recursively yield all paragraphs from a table and any nested tables,
+    skipping duplicate paragraph instances caused by merged table cells."""
+    if seen_p_ids is None:
+        seen_p_ids = set()
+    for row in table.rows:
+        for cell in row.cells:
+            for p in cell.paragraphs:
+                p_id = id(p._element)
+                if p_id not in seen_p_ids:
+                    seen_p_ids.add(p_id)
                     yield p
+            for nested_table in cell.tables:
+                yield from _iter_table_paragraphs(nested_table, seen_p_ids)
+
+
+def iter_document_paragraphs(doc: Document) -> Generator:
+    """Yield all paragraphs from main body and recursively throughout all tables without duplicates."""
+    seen_p_ids: set[int] = set()
+    for p in doc.paragraphs:
+        p_id = id(p._element)
+        if p_id not in seen_p_ids:
+            seen_p_ids.add(p_id)
+            yield p
+    for table in doc.tables:
+        yield from _iter_table_paragraphs(table, seen_p_ids)
+
+
+def extract_text_from_pdf(path: Path | str) -> str:
+    """Extract clean text from a PDF file using PyMuPDF (fitz), pypdf, or pdfplumber."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"PDF file not found: {p}")
+
+    # 1. Try PyMuPDF (fitz) - fastest and highest fidelity
+    try:
+        import fitz
+        doc = fitz.open(str(p))
+        pages = []
+        for page in doc:
+            txt = page.get_text()
+            if txt and txt.strip():
+                pages.append(txt.strip())
+        doc.close()
+        if pages:
+            return "\n\n".join(pages)
+    except Exception as e:
+        logger.debug(f"PyMuPDF extraction failed: {e}")
+
+    # 2. Try pypdf fallback
+    try:
+        import pypdf
+        reader = pypdf.PdfReader(str(p))
+        pages = []
+        for page in reader.pages:
+            txt = page.extract_text()
+            if txt and txt.strip():
+                pages.append(txt.strip())
+        if pages:
+            return "\n\n".join(pages)
+    except Exception as e:
+        logger.debug(f"pypdf extraction failed: {e}")
+
+    # 3. Try pdfplumber fallback
+    try:
+        import pdfplumber
+        with pdfplumber.open(str(p)) as pdf:
+            pages = [page.extract_text() for page in pdf.pages if page.extract_text()]
+            if pages:
+                return "\n\n".join(pages)
+    except Exception as e:
+        logger.debug(f"pdfplumber extraction failed: {e}")
+
+    raise RuntimeError(f"Could not extract text from PDF: {p.name}")
+
+
+def extract_text_from_file(path: Path | str) -> str:
+    """Unified file text extractor for .docx, .pdf, and .txt files."""
+    p = Path(path)
+    if not p.exists():
+        raise FileNotFoundError(f"File not found: {p}")
+    suffix = p.suffix.lower()
+    if suffix == ".pdf":
+        return extract_text_from_pdf(p)
+    elif suffix == ".docx":
+        doc = docx.Document(str(p))
+        return "\n\n".join(para.text for para in iter_document_paragraphs(doc) if para.text.strip())
+    else:
+        return p.read_text(encoding="utf-8", errors="replace")
+

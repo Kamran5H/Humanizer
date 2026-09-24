@@ -79,7 +79,7 @@ def print_cli_report(
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="humanizer_pro",
-        description="Humanizer Pro — High-Performance Stealth Text Humanizer & Academic Rewriter",
+        description="Humanizer Pro -- High-Performance Stealth Text Humanizer & Academic Rewriter",
     )
     p.add_argument("file", nargs="?", help="Input file to humanize (.docx or .txt)")
     p.add_argument("--text", help="Raw input string to humanize")
@@ -179,14 +179,15 @@ def main(argv: list[str] | None = None) -> int:
 
         if src.suffix.lower() == ".docx":
             import docx
+            from humanizer.document import iter_document_paragraphs
             doc_in = docx.Document(str(src))
-            in_text = "\n\n".join(p.text for p in doc_in.paragraphs if p.text.strip())
+            in_text = "\n\n".join(p.text for p in iter_document_paragraphs(doc_in) if p.text.strip())
             init_res = score_text(in_text)
 
             saved = humanize_docx(src, cfg, dst=dst)
 
             doc_out = docx.Document(str(saved))
-            full_text = "\n\n".join(p.text for p in doc_out.paragraphs if p.text.strip())
+            full_text = "\n\n".join(p.text for p in iter_document_paragraphs(doc_out) if p.text.strip())
             scores = score_text(full_text)
         else:
             raw = src.read_text(encoding="utf-8")

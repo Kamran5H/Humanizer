@@ -27,17 +27,25 @@ _LIST_SPLIT = re.compile(r",\s+\w+\.\s+(And|Or|Nor)\s")
 _CITATION = re.compile(r"\[\d+(?:[,\-]\s*\d+)*\]")
 
 _A_OK_VOWEL = re.compile(r"^(uni|use|user|usu|euro|eu|one|once|ubiq|unique|unicorn|unit|univ|ufo)", re.I)
-_AN_OK_CONS = re.compile(r"^(hour|honest|honou?r|heir|x-?ray|mri|fbi)", re.I)
+_AN_OK_CONS = re.compile(
+    r"^(hour|honest|honou?r|heir|x-?ray|mri|fbi|"
+    r"[FHLMNRSX][A-Z0-9]+|RNA|SEM|XRD|XPS|NMR|NMC|STEM|FTIR|AFM|LCD|LED|HIV|URL)\b",
+    re.I,
+)
+_DUMMY_CITES = re.compile(r"\[(?:citation|ref|reference|source|cite|insert\s+citation)\]", re.IGNORECASE)
+_CITE_RE = re.compile(r"\[[a-zA-Z0-9,\-\s]{1,20}\]")
 
 
 def lint_text(text: str, src: Optional[str] = None) -> list[tuple[str, str]]:
-    """Return [(severity, message)] for `text`. If `src` given, flag fabricated citations."""
+    """Return [(severity, message)] for `text`. If `src` given, flag fabricated citations and content drift."""
     issues: list[tuple[str, str]] = []
 
     if _FFFD in text:
         issues.append(("error", f"contains U+FFFD replacement char x{text.count(_FFFD)}"))
     if "  " in text:
         issues.append(("warn", "double space present"))
+    if "__LOCK_" in text or "__RUN_LOCKED_" in text:
+        issues.append(("error", "unexpanded placeholder token(s) present in text"))
     for m in _DUP_WORD.finditer(text):
         issues.append(("warn", f"doubled word: '{m.group(0)}'"))
     for m in _A_AN.finditer(text):
@@ -52,18 +60,32 @@ def lint_text(text: str, src: Optional[str] = None) -> list[tuple[str, str]]:
         issues.append(("error", "doubled punctuation"))
     if _LIST_SPLIT.search(text):
         issues.append(("error", "list appears split into a fragment ('A, B. And C')"))
+
+    dummy_matches = _DUMMY_CITES.findall(text)
+    if dummy_matches:
+        issues.append(("error", f"dummy placeholder citation(s) found: {sorted(set(dummy_matches))}"))
+
     tells = _AI_TELLS.findall(text)
     if tells:
         issues.append(("warn", f"AI-tell words survive: {sorted(set(t.lower() for t in tells))}"))
 
     if src is not None:
-        src_cites = set(_CITATION.findall(src))
-        fabricated = [c for c in _CITATION.findall(text) if c not in src_cites]
+        # URL integrity check
+        src_urls = set(re.findall(r"https?://\S+|www\.\S+", src))
+        text_urls = set(re.findall(r"https?://\S+|www\.\S+", text))
+        fab_urls = text_urls - src_urls
+        if fab_urls:
+            issues.append(("error", f"fabricated URL(s): {sorted(fab_urls)}"))
+
+        # Citation integrity check
+        src_cites = set(c for c in _CITE_RE.findall(src) if not re.match(r"^__(?:RUN|LOCK)_", c))
+        text_cites = set(c for c in _CITE_RE.findall(text) if not re.match(r"^__(?:RUN|LOCK)_", c))
+        fabricated = [c for c in text_cites if c not in src_cites and not _DUMMY_CITES.match(c)]
         if fabricated:
-            issues.append(("error", f"fabricated citation(s): {fabricated}"))
-        dropped = [c for c in src_cites if c not in set(_CITATION.findall(text))]
+            issues.append(("error", f"fabricated citation(s): {sorted(fabricated)}"))
+        dropped = [c for c in src_cites if c not in text_cites]
         if dropped:
-            issues.append(("error", f"dropped source citation(s): {dropped}"))
+            issues.append(("error", f"dropped source citation(s): {sorted(dropped)}"))
 
     return issues
 

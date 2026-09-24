@@ -257,13 +257,93 @@ def _strip_ai_tells(text: str) -> str:
     return text.strip()
 
 
+def _inflect_ing_to_3sg(verb_ing: str) -> str:
+    """Accurately convert a present participle (-ing) to 3rd person singular present tense."""
+    v = verb_ing.lower()
+    _MAP = {
+        "having": "has", "being": "is", "improving": "improves", "reducing": "reduces",
+        "increasing": "increases", "enhancing": "enhances", "enabling": "enables",
+        "providing": "provides", "creating": "creates", "generating": "generates",
+        "producing": "produces", "facilitating": "facilitates", "demonstrating": "demonstrates",
+        "indicating": "indicates", "promoting": "promotes", "ensuring": "ensures",
+        "accelerating": "accelerates", "yielding": "yields", "leading": "leads",
+        "showing": "shows", "helping": "helps", "making": "makes", "giving": "gives",
+        "taking": "takes", "changing": "changes", "causing": "causes", "limiting": "limits",
+        "mitigating": "mitigates", "optimizing": "optimizes", "optimising": "optimises",
+        "amplifying": "amplifies", "identifying": "identifies", "modifying": "modifies",
+        "satisfying": "satisfies", "underlying": "underlies", "affecting": "affects",
+        "influencing": "influences", "preventing": "prevents", "allowing": "allows",
+        "supporting": "supports", "requiring": "requires", "establishing": "establishes",
+        "extending": "extends", "expanding": "expands", "fostering": "fosters",
+        "strengthening": "strengthens", "lowering": "lowers", "raising": "raises",
+        "elevating": "elevates", "driving": "drives", "reshaping": "reshapes",
+        "transforming": "transforms", "shifting": "shifts", "opening": "opens",
+        "paving": "paves", "resulting": "results", "serving": "serves", "stopping": "stops",
+    }
+    if v in _MAP:
+        res = _MAP[v]
+        return res.capitalize() if verb_ing[:1].isupper() else res
+
+    if v.endswith("ying"):
+        res = v[:-4] + "ies"
+        return res.capitalize() if verb_ing[:1].isupper() else res
+
+    if v.endswith("ing"):
+        stem = v[:-3]
+        if len(stem) >= 3 and stem[-1] == stem[-2] and stem[-1] not in "lsz":
+            stem = stem[:-1]
+            res = stem + "s"
+            return res.capitalize() if verb_ing[:1].isupper() else res
+
+        try:
+            from nltk.corpus import wordnet
+            if wordnet.synsets(stem + "e", pos=wordnet.VERB):
+                res = stem + "es"
+                return res.capitalize() if verb_ing[:1].isupper() else res
+            if wordnet.synsets(stem, pos=wordnet.VERB):
+                res = (stem + "es") if stem.endswith(("s", "sh", "ch", "x", "z", "o")) else (stem + "s")
+                return res.capitalize() if verb_ing[:1].isupper() else res
+        except Exception:
+            pass
+
+        if stem.endswith(("s", "sh", "ch", "x", "z", "o")) or stem.endswith(("c", "v", "z", "bl", "pl", "cl", "gl", "tl")):
+            res = stem + "es"
+        else:
+            res = stem + "s"
+        return res.capitalize() if verb_ing[:1].isupper() else res
+
+    return verb_ing + "s"
+
+
 def _guard_fidelity(src: str, out: str) -> str:
-    cites = set(re.findall(r"\[\d+(?:[,\-]\s*\d+)*\]", src))
-    out_cites = re.findall(r"\[\d+(?:[,\-]\s*\d+)*\]", out)
+    # 1. Strip hallucinated dummy citation tags like [citation], [ref], [source]
+    out = re.sub(r"\[(?:citation|ref|reference|source|cite|insert\s+citation)\]", "", out, flags=re.IGNORECASE)
+
+    # 2. Strict citation retention: only preserve citations that actually existed in src
+    src_cites = set(re.findall(r"\[[a-zA-Z0-9,\-\s]{1,20}\]", src))
+    out_cites = re.findall(r"\[[a-zA-Z0-9,\-\s]{1,20}\]", out)
     for c in out_cites:
-        if c not in cites:
+        # Never strip run or lock placeholders
+        if not re.match(r"^__(?:RUN|LOCK)_", c) and c not in src_cites:
             out = out.replace(c, "")
-    return re.sub(r"[ \t]{2,}", " ", out).strip()
+
+    # 3. URL fidelity: if src has no URLs, reject any fabricated URLs
+    src_urls = set(re.findall(r"https?://\S+|www\.\S+", src))
+    if not src_urls:
+        out = re.sub(r"\(?\b(?:https?://|www\.)[^\s()]+(?:\([^\s()]+\)[^\s()]*)*\)?", "", out)
+
+    # 4. Remove consecutive duplicated sentences
+    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", out) if s.strip()]
+    deduped = []
+    for s in sents:
+        if not deduped or s.lower() != deduped[-1].lower():
+            deduped.append(s)
+    out = " ".join(deduped)
+
+    # 5. Clean whitespace & punctuation
+    out = re.sub(r"\s+([,.;:])", r"\1", out)
+    out = re.sub(r"[ \t]{2,}", " ", out)
+    return out.strip()
 
 
 def _break_ai_syntactic_patterns(text: str) -> str:
@@ -271,14 +351,19 @@ def _break_ai_syntactic_patterns(text: str) -> str:
     if not text:
         return ""
 
-    # 1. Break trailing participial chains into active main clauses or separate sentences
-    text = re.sub(r",\s*(?:thereby|thus)\s+(\w+)ing\b", r". This \1s", text, flags=re.IGNORECASE)
+    # 1. Break trailing participial chains into active main clauses using proper verb inflection
+    def _sub_thereby(m: re.Match) -> str:
+        verb_ing = m.group(1) + "ing"
+        verb_3sg = _inflect_ing_to_3sg(verb_ing)
+        return f". This {verb_3sg}"
+
+    text = re.sub(r"(?:,\s*|\s*,?\s*and\s+)(?:thereby|thus)\s+(\w+)ing\b", _sub_thereby, text, flags=re.IGNORECASE)
     text = re.sub(r",\s*leading to\b", r". This leads to", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*prompting\b", r". This prompted", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*fostering\b", r" and fostered", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*producing\b", r". This produced", text, flags=re.IGNORECASE)
+    text = re.sub(r",\s*prompting\b", r". This prompts", text, flags=re.IGNORECASE)
+    text = re.sub(r",\s*fostering\b", r" and fosters", text, flags=re.IGNORECASE)
+    text = re.sub(r",\s*producing\b", r". This produces", text, flags=re.IGNORECASE)
     text = re.sub(r",\s*ensuring that\b", r". This ensures that", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*refining\b", r" and refined", text, flags=re.IGNORECASE)
+    text = re.sub(r",\s*refining\b", r" and refines", text, flags=re.IGNORECASE)
     text = re.sub(r",\s*encompassing\b", r", including", text, flags=re.IGNORECASE)
 
     # 2. Fix specific swollen AI academic phrases
@@ -345,8 +430,9 @@ def build_stealth_prompt(
             "Keep any inline tags such as <b id='X'>...</b> or <i id='Y'>...</i> around the corresponding terms."
         )
         length_line = (
-            "1. SENTENCE LENGTH & RHYTHM (CRITICAL): Keep average sentence length between 14 and 19 words (max 24 words). "
-            "Never write 30+ word unbroken sentences. Alternate short, clear sentences (6-10 words) with medium ones (14-22 words)."
+            "1. SENTENCE BURSTINESS & RHYTHM (CRITICAL): Vary sentence lengths widely to achieve high burstiness. "
+            "Alternate short, punchy statements (5-9 words) with longer analytical explanations (20-30 words). "
+            "Never make consecutive sentences uniform in length."
         )
         anti_chain = (
             "5. NO PARTICIPIAL CHAINS: Do NOT end sentences with participial tails like ', leading to...', ', thereby enabling...', "
@@ -355,7 +441,7 @@ def build_stealth_prompt(
         closing = "Keep the SAME meaning and concise length, formal and scientific without padding"
     else:
         register = "4. Contractions and active voice, professional register. No slang or hype. Keep any inline tags."
-        length_line = "1. Vary sentence length — alternate short (4-8 words) and long (18-24 words)."
+        length_line = "1. SENTENCE BURSTINESS & RHYTHM (CRITICAL): Alternate very short punchy sentences (4-8 words) with longer compound sentences (20-32 words). Vary rhythm naturally."
         anti_chain = "5. Avoid participial dangling clauses."
         closing = "Same length and meaning"
 
@@ -363,7 +449,7 @@ def build_stealth_prompt(
 
     return f"""{voice}
 
-FACTS (non-negotiable): keep every claim, number, name, date, equation, URL, and bracketed citation EXACTLY. Introduce NO new facts or claims. Keep all technical terms precise. Preserve any tags of the form <b id='...'>...</b>, <i id='...'>...</i>, or __RUN_LOCKED_...__ intact.
+FACTS (non-negotiable): keep every claim, number, name, date, equation, URL, and bracketed citation EXACTLY. Introduce NO new facts, studies, surveys, equations, URLs, or claims not in the TEXT. NEVER output placeholder tokens like '[citation]' or '[ref]'. Keep all technical terms precise. Preserve any tags of the form <b id='...'>...</b>, <i id='...'>...</i>, or __RUN_LOCKED_...__ intact.
 
 HOW:
 {length_line}
@@ -440,10 +526,15 @@ def _roughen_smooth_sentences(text: str, cfg: HumanizerConfig) -> str:
                 if w_cand < max(3, int(w_orig * 0.45)) or w_cand > max(35, int(w_orig * 1.85)):
                     continue
 
-                # Discard if citation fidelity violated
-                src_cites = set(re.findall(r"\[\d+(?:[,\-]\s*\d+)*\]", sent))
-                cand_cites = set(re.findall(r"\[\d+(?:[,\-]\s*\d+)*\]", cand))
+                # Discard if citation or lock fidelity violated
+                src_cites = set(re.findall(r"\[[a-zA-Z0-9,\-\s]{1,30}\]", sent))
+                cand_cites = set(re.findall(r"\[[a-zA-Z0-9,\-\s]{1,30}\]", cand))
                 if src_cites != cand_cites:
+                    continue
+
+                src_locks = set(re.findall(r"__(?:LOCK|RUN)_[A-Z0-9_]+__", sent))
+                cand_locks = set(re.findall(r"__(?:LOCK|RUN)_[A-Z0-9_]+__", cand))
+                if src_locks != cand_locks:
                     continue
 
                 sents[idx] = cand
@@ -556,6 +647,8 @@ def humanize_text(text: str, cfg: HumanizerConfig) -> str:
     workers = max(1, min(cfg.parallel_workers, total_paras))
 
     def _work(idx: int) -> tuple[int, str]:
+        if cfg.cancel_event and cfg.cancel_event.is_set():
+            return idx, blocks[idx]
         cached = ckpt.get(idx)
         if cached is not None:
             return idx, cached
@@ -580,6 +673,8 @@ def humanize_text(text: str, cfg: HumanizerConfig) -> str:
             futures = {ex.submit(_work, idx): idx for idx in non_empty_indices}
             for fut in cf.as_completed(futures):
                 if cfg.cancel_event and cfg.cancel_event.is_set():
+                    for f in futures:
+                        f.cancel()
                     break
                 idx, rewritten = fut.result()
                 new_blocks[idx] = rewritten
@@ -624,6 +719,8 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
     vault_lock = threading.Lock()
 
     def _process_para(idx: int) -> tuple[int, str]:
+        if cfg.cancel_event and cfg.cancel_event.is_set():
+            return idx, paras_to_process[idx].text
         cached = ckpt.get(idx)
         p = paras_to_process[idx]
         tagged_text, vault = _tag_runs(p)
@@ -657,6 +754,8 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
             futures = {ex.submit(_process_para, idx): idx for idx in range(total_paras)}
             for fut in cf.as_completed(futures):
                 if cfg.cancel_event and cfg.cancel_event.is_set():
+                    for f in futures:
+                        f.cancel()
                     break
                 idx, rewritten = fut.result()
                 results_map[idx] = rewritten
