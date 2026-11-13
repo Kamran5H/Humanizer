@@ -1,78 +1,74 @@
-# Free LLM Provider Pool — how to escape rate limits
+# LLM providers
 
-Groq's free tier caps at 100k tokens/day per model. Once you hit it, you're
-stuck on the local fallback for the rest of the day.
+Humanizer Pro works without any API key: it then uses its offline rule engine. Add one or more keys
+and it rewrites with an LLM instead, rotating across every configured provider and failing over
+automatically when one is rate-limited, out of daily quota or down. If every provider fails, the
+paragraph is still rewritten by the offline engine, so a job never stalls.
 
-Humanizer Pro now auto-discovers **any** provider whose key you drop into
-`.keys.env` and merges them all into one failover pool. Add a key → the pool
-uses it. Nothing else to configure.
+## Add a key
 
-## The order the pool tries endpoints
+Copy `.env.example` to `.env` (or `.keys.env`) in the project folder, or in `~/.config/humanizer/`,
+and fill in any keys you have. Restart the app. Environment variables work too.
 
-1. `STEALTH_API_BASE` (legacy — usually Groq)
-2. Cerebras
-3. SambaNova
-4. OpenRouter (the `:free` models require zero credit)
-5. GitHub Models
-6. Together
-7. Mistral
-8. DeepInfra
-9. `STEALTH_FALLBACK_BASE` (local Ollama)
+| Variable | Provider | Default model(s) | Free tier | Sign up |
+|---|---|---|---|---|
+| `GROQ_API_KEY` | Groq | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` | yes | <https://console.groq.com/keys> |
+| `GEMINI_API_KEY` | Google Gemini | `gemini-2.5-flash`, `gemini-2.5-flash-lite` | yes | <https://aistudio.google.com/apikey> |
+| `CEREBRAS_API_KEY` | Cerebras | `llama-3.3-70b` | yes | <https://cloud.cerebras.ai> |
+| `OPENROUTER_API_KEY` | OpenRouter | several `:free` models | yes | <https://openrouter.ai/keys> |
+| `SAMBANOVA_API_KEY` | SambaNova | `Meta-Llama-3.3-70B-Instruct` | yes | <https://cloud.sambanova.ai> |
+| `MISTRAL_API_KEY` | Mistral | `mistral-small-latest` | yes | <https://console.mistral.ai> |
+| `GITHUB_MODELS_TOKEN` | GitHub Models | `gpt-4o-mini`, `Meta-Llama-3.3-70B-Instruct` | yes | fine-grained token with *models: read* |
+| `TOGETHER_API_KEY` | Together | `Llama-3.3-70B-Instruct-Turbo` | trial credit | <https://api.together.ai> |
+| `DEEPINFRA_API_KEY` | DeepInfra | `Llama-3.3-70B-Instruct` | trial credit | <https://deepinfra.com/dash> |
+| `OPENAI_API_KEY` | OpenAI | `gpt-4o-mini` | paid | <https://platform.openai.com/api-keys> |
 
-If Groq is TPD-exhausted, the very next call goes to Cerebras (or whichever
-provider you added), zero delay. Once every cloud provider is cooling,
-Ollama picks up. When Groq's quota resets, it reclaims the top slot.
+Free tiers and model names change often; check each provider's page if a model stops working.
+A model that returns *not found* is disabled for 12 hours and the pool moves on.
 
-## Sign up + add the key
+A `GITHUB_TOKEN` that is merely present in your shell or CI is deliberately **not** used, so your
+documents are never sent to GitHub Models by accident. Use `GITHUB_MODELS_TOKEN`, or write
+`GITHUB_TOKEN=...` into your `.env` file to opt in.
 
-Copy any of these lines into `C:\Users\chkam\OneDrive\Desktop\BrandFinder\.keys.env`,
-replace the placeholder with your key. Restart the app.
+## Choose models
 
-```dotenv
-# Cerebras — llama-3.3-70b at ~2000 tok/s, ~1M tokens/day free
-# Signup: https://cloud.cerebras.ai   (click "API Keys")
-CEREBRAS_API_KEY=csk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# SambaNova — Meta-Llama-3.3-70B, generous daily quota
-# Signup: https://cloud.sambanova.ai
-SAMBANOVA_API_KEY=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-
-# OpenRouter — one key unlocks many :free models (llama, deepseek, qwen, mistral)
-# Signup: https://openrouter.ai/keys  (no credit card required)
-OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# GitHub Models — GPT-4o-mini and Llama-3.3-70B free via your existing GitHub PAT
-# Create a fine-grained token: https://github.com/settings/tokens?type=beta
-# It only needs the "models: read" permission.
-GITHUB_TOKEN=github_pat_xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# Together AI — free Llama-3.1-70B-Turbo
-# Signup: https://api.together.ai
-TOGETHER_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# Mistral La Plateforme — free experimental tier
-# Signup: https://console.mistral.ai
-MISTRAL_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-
-# DeepInfra — small free credit at signup
-# Signup: https://deepinfra.com/dash
-DEEPINFRA_API_KEY=xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
-
-## Override the model list per provider
-
-Each `_API_KEY` env var has a matching `_MODELS` env var. For example:
+Every provider reads an optional `<NAME>_MODELS` variable (comma separated):
 
 ```dotenv
-# Only use Cerebras's llama-3.3-70b (skip qwen)
-CEREBRAS_MODELS=llama-3.3-70b
-
-# Only use OpenRouter's DeepSeek free model
-OPENROUTER_MODELS=deepseek/deepseek-chat-v3.1:free
+GROQ_MODELS=llama-3.3-70b-versatile
+OPENROUTER_MODELS=meta-llama/llama-3.3-70b-instruct:free
+GEMINI_MODELS=gemini-2.5-flash
+GITHUB_MODELS=gpt-4o-mini
 ```
 
-## Recommendation
+## Custom and local endpoints
 
-At minimum, add **Cerebras + OpenRouter** — together they give you effectively
-unlimited daily throughput on 70B-class models for free, and the pool will
-transparently balance across them when Groq's daily cap hits.
+Any OpenAI-compatible server can be added; it is tried first:
+
+```dotenv
+STEALTH_API_BASE=https://my-endpoint.example.com/v1
+STEALTH_API_KEY=...
+STEALTH_MODEL=my-model
+```
+
+A local [Ollama](https://ollama.com) server is used last, after every cloud provider:
+
+```dotenv
+STEALTH_FALLBACK_BASE=http://localhost:11434/v1
+STEALTH_FALLBACK_MODEL=qwen2.5:7b
+```
+
+## How failover works
+
+| Event | What happens |
+|---|---|
+| 429 rate limit | endpoint cools for the `Retry-After` time (default 30 s) |
+| Daily quota exhausted | endpoint cools for 6 h |
+| 401/403 bad key | endpoint cools for 6 h; the reason is shown in the studio's provider list |
+| 404 unknown model | endpoint cools for 12 h |
+| 400/413/422 rejected request | endpoint cools for 5 min |
+| 5xx / network error | endpoint cools for 45–60 s |
+
+Cooldowns persist across restarts. Calls to the same host are spaced 1.5 s apart (set
+`HUMANIZER_MIN_INTERVAL` to change this) without blocking calls to other providers. Click the engine
+pill in the studio header to see each endpoint's live status and reset all cooldowns.

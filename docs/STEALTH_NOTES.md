@@ -1,3 +1,7 @@
+> **Historical notes.** These engineering notes describe earlier versions (v2–v5) of the project, when the
+> code lived in `humanizer_pro.py` and `ai_detector.py`. The current architecture is described in the
+> [README](../README.md); numbers below were measured on those older versions.
+
 # Stealth Writer — techniques, calibration, and measured results
 
 Honest engineering notes for the `humanizer_pro.py` + `ai_detector.py` upgrade. Every
