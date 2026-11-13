@@ -12,9 +12,11 @@ import sys
 import time
 from pathlib import Path
 
+from humanizer import __version__
 from humanizer.config import HumanizerConfig
-from humanizer.detector import score_text
-from humanizer.engine import humanize_text, humanize_docx
+from humanizer.detector import analyze, score_text
+from humanizer.document import docx_text, extract_text_from_file
+from humanizer.engine import humanize_docx, humanize_text
 from humanizer.lint import lint_text
 
 
@@ -42,70 +44,133 @@ def print_cli_report(
     dst: Path | None = None,
     duration: float = 0.0,
 ) -> None:
-    """Print a clean executive progress and audit report box."""
-    is_passing = final_score <= 5.0
-    verdict = "100% Human Passing (Verified Safe)" if is_passing else "Humanized"
+    """Print a compact, aligned summary box to stderr."""
+    metrics = metrics or {}
+    width = 64
     delta = initial_score - final_score
-    delta_str = f" (↓ {delta:.1f}% reduction)" if delta > 0 else ""
-
-    lines = [
-        "┌────────────────────────────────────────────────────────────────────────┐",
-        "│                HUMANIZER PRO — PROGRESS & AUDIT REPORT                 │",
-        "├────────────────────────────────────────────────────────────────────────┤",
-        f"│  Verdict:             {verdict:<47} │",
-        f"│  Initial AI Score:    {initial_score:>5.1f}%{'':<43} │",
-        f"│  Final AI Score:      {final_score:>5.1f}%{delta_str:<43} │",
-        f"│  Paragraphs Processed: {paras:<47} │",
-        f"│  Total Word Count:    {words:<47} │",
+    rows = [
+        ("Verdict", metrics.get("verdict") or "Humanized"),
+        ("AI score", f"{initial_score:.1f}% -> {final_score:.1f}%" + (f"  (-{delta:.1f} pts)" if delta > 0 else "")),
+        ("Paragraphs", str(paras)),
+        ("Words", f"{words:,}"),
+        ("Length variation", f"{metrics.get('burstiness') or 0.0:.1f}%"),
+        ("AI patterns left", str(metrics.get("ai_tells", 0))),
     ]
-
-    if metrics:
-        lines.append(f"│  Burstiness (CV):     {metrics.get('burstiness', 0.0):>5.1f}{'':<43} │")
-        lines.append(f"│  Perplexity:          {metrics.get('perplexity', 0.0):>5.1f}{'':<43} │")
-        lines.append(f"│  Residual AI Tells:   {metrics.get('ai_tells', 0):<47} │")
-
+    ppl = metrics.get("perplexity")
+    if isinstance(ppl, (int, float)):
+        rows.append(("Perplexity", f"{ppl:.1f}"))
     if duration > 0:
-        lines.append(f"│  Processing Time:     {duration:>5.1f}s{'':<43} │")
-
+        rows.append(("Time", f"{duration:.1f}s"))
     if dst:
-        dst_name = dst.name if len(str(dst.name)) <= 46 else dst.name[:43] + "..."
-        lines.append(f"│  Output Saved:        {dst_name:<47} │")
+        rows.append(("Saved to", str(dst.name)))
 
-    lines.append("└────────────────────────────────────────────────────────────────────────┘")
+    def line(text: str) -> str:
+        return "│ " + text[: width - 4].ljust(width - 4) + " │"
 
-    print("\n" + "\n".join(lines) + "\n", file=sys.stderr)
+    out = ["┌" + "─" * (width - 2) + "┐", line("HUMANIZER PRO — REPORT".center(width - 4)), "├" + "─" * (width - 2) + "┤"]
+    out += [line(f"{k:<18}{v}") for k, v in rows]
+    out.append("└" + "─" * (width - 2) + "┘")
+    print("\n" + "\n".join(out) + "\n", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="humanizer_pro",
-        description="Humanizer Pro -- High-Performance Stealth Text Humanizer & Academic Rewriter",
+        prog="humanizer",
+        description="Humanizer Pro — rewrite AI-sounding text into natural prose.",
+        epilog="Examples:\n  humanizer essay.docx\n  humanizer notes.txt -o clean.txt --general\n"
+               "  cat draft.md | humanizer --stdin --local > out.md\n  humanizer --analyze report.txt\n  humanizer --web",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
     )
-    p.add_argument("file", nargs="?", help="Input file to humanize (.docx or .txt)")
+    p.add_argument("file", nargs="?", help="Input file (.docx, .txt, .md, .pdf)")
     p.add_argument("--text", help="Raw input string to humanize")
     p.add_argument("--stdin", action="store_true", help="Read input from stdin")
-    p.add_argument("--out", "-o", help="Explicit output path")
-    p.add_argument("--level", type=int, choices=[1, 2, 3], default=3, help="Stealth level (1=fast, 2=gauge, 3=stealth+refine)")
-    p.add_argument("--target", type=float, default=5.0, help="Target AI score threshold (default: 5.0)")
-    p.add_argument("--budget", type=int, default=6, help="Retry budget per paragraph (default: 6)")
-    p.add_argument("--scientific", action="store_true", default=True, help="Enable academic/scientific register")
-    p.add_argument("--general", dest="scientific", action="store_false", help="Use general/casual register")
-    p.add_argument("--local", action="store_true", help="Force offline rule pipeline (no cloud calls)")
-    p.add_argument("--score", action="store_true", help="Print AI detection score breakdown")
-    p.add_argument("--report", action="store_true", default=True, help="Display executive audit report box")
-    p.add_argument("--no-report", dest="report", action="store_false", help="Suppress executive audit report box")
-    p.add_argument("--json", action="store_true", help="Output results and metrics as structured JSON")
-    p.add_argument("--workers", type=int, default=4, help="Parallel concurrency workers")
+    p.add_argument("--out", "-o", help="Output path (default: <name>_humanized.<ext>)")
+    p.add_argument("--level", type=int, choices=[1, 2, 3], default=3, help="Strength: 1=light, 2=balanced, 3=max (default)")
+    p.add_argument("--target", type=float, default=10.0, help="Stop early at this local AI score (default 10)")
+    p.add_argument("--budget", type=int, default=4, help="LLM candidates per paragraph at level>=2 (default 4)")
+    p.add_argument("--scientific", "--academic", dest="scientific", action="store_true", default=True, help="Academic register (default)")
+    p.add_argument("--general", dest="scientific", action="store_false", help="General/conversational register")
+    p.add_argument("--local", "--offline", dest="local", action="store_true", help="Offline rule engine only (nothing leaves your machine)")
+    p.add_argument("--analyze", action="store_true", help="Only score the input and list AI patterns; do not rewrite")
+    p.add_argument("--score", action="store_true", help="Print the score report (same as --report)")
+    p.add_argument("--report", action="store_true", default=True, help="Print the report box to stderr (default)")
+    p.add_argument("--no-report", dest="report", action="store_false", help="Suppress the report box")
+    p.add_argument("--json", action="store_true", help="Print results as JSON")
+    p.add_argument("--workers", type=int, default=4, help="Parallel LLM workers (default 4)")
+    p.add_argument("--seed", type=int, help="Random seed for reproducible offline output")
+    p.add_argument("--web", action="store_true", help="Start the web studio")
+    p.add_argument("--gui", action="store_true", help="Start the desktop app")
+    p.add_argument("--port", type=int, default=8000, help="Web studio port (default 8000)")
+    p.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     return p
 
 
+def _print_analysis(text: str, as_json: bool) -> int:
+    a = analyze(text)
+    if as_json:
+        print(json.dumps({k: v for k, v in a.items() if k != "sentence_scores"}, indent=2))
+        return 0
+    print(f"AI-likelihood: {a['ai_score']:.1f}%  ({a['verdict']}, {a['confidence']} confidence)")
+    for s in a["signals"]:
+        print(f"  {s['label']:<20} {s['ai']:>3}%  {s['hint']}")
+    if a["tells"]:
+        print(f"\n{len(a['tells'])} AI pattern(s):")
+        for t in a["tells"][:40]:
+            print(f"  - \"{t['text'].strip()}\" ({t['label']}) -> {t['suggestion']}")
+    return 0
+
+
+def _read_input(args) -> tuple[str, Path | None]:
+    if args.stdin:
+        return sys.stdin.read(), None
+    if args.text is not None:
+        return args.text, None
+    src = Path(args.file)
+    if not src.exists():
+        raise FileNotFoundError(f"File '{src}' does not exist.")
+    return extract_text_from_file(src), src
+
+
 def main(argv: list[str] | None = None) -> int:
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(errors="replace")  # never crash on a legacy Windows console
+        except Exception:
+            pass
     parser = build_parser()
     args = parser.parse_args(argv)
 
-    show_bar = not args.json and (args.file or args.text or not args.stdin)
-    p_cb = render_cli_progress_bar if show_bar else None
+    if args.web or (not args.file and args.text is None and not args.stdin and not args.gui):
+        if not args.web:
+            try:
+                import tkinter  # noqa: F401
 
+                from humanizer.gui import launch_gui
+
+                launch_gui()
+                return 0
+            except Exception:
+                pass
+        from humanizer.web import launch_web
+
+        launch_web(port=args.port)
+        return 0
+    if args.gui:
+        from humanizer.gui import launch_gui
+
+        launch_gui()
+        return 0
+
+    try:
+        input_text, src = _read_input(args)
+    except Exception as e:
+        print(f"Error: {e}", file=sys.stderr)
+        return 1
+
+    if args.analyze:
+        return _print_analysis(input_text, args.json)
+
+    show_bar = not args.json and sys.stderr.isatty()
     cfg = HumanizerConfig(
         use_gemini=not args.local,
         stealth_level=args.level,
@@ -113,115 +178,51 @@ def main(argv: list[str] | None = None) -> int:
         retry_budget=args.budget,
         scientific=args.scientific,
         parallel_workers=args.workers,
-        progress_callback=p_cb,
+        progress_callback=render_cli_progress_bar if show_bar else None,
     )
+    if args.seed is not None:
+        cfg.rng.seed(args.seed)
 
     t0 = time.time()
-
-    if args.stdin:
-        input_text = sys.stdin.read()
-        init_res = score_text(input_text)
+    init_res = score_text(input_text)
+    dst: Path | None = None
+    if src is not None and src.suffix.lower() == ".docx":
+        dst = Path(args.out) if args.out else src.with_name(f"{src.stem}_humanized.docx")
+        humanize_docx(src, cfg, dst=dst)
+        out_text = docx_text(dst)
+    else:
         out_text = humanize_text(input_text, cfg)
-        scores = score_text(out_text)
-        dur = time.time() - t0
-
-        if args.json:
-            report = {
-                "success": True,
-                "output": out_text,
-                "initial_score": init_res.get("ai_score", 0.0),
-                "final_score": scores.get("ai_score", 0.0),
-                "metrics": scores,
-                "duration_seconds": round(dur, 2),
-                "lint": lint_text(out_text, input_text),
-            }
-            print(json.dumps(report, indent=2))
-        else:
-            sys.stdout.write(out_text)
-            if args.report or args.score:
-                paras = len([p for p in out_text.split("\n\n") if p.strip()])
-                words = len(out_text.split())
-                print_cli_report(init_res["ai_score"], scores["ai_score"], words, paras, scores, duration=dur)
-        return 0
-
-    if args.text:
-        init_res = score_text(args.text)
-        out_text = humanize_text(args.text, cfg)
-        scores = score_text(out_text)
-        dur = time.time() - t0
-
-        if args.json:
-            report = {
-                "success": True,
-                "output": out_text,
-                "initial_score": init_res.get("ai_score", 0.0),
-                "final_score": scores.get("ai_score", 0.0),
-                "metrics": scores,
-                "duration_seconds": round(dur, 2),
-                "lint": lint_text(out_text, args.text),
-            }
-            print(json.dumps(report, indent=2))
-        else:
-            print(out_text)
-            if args.report or args.score:
-                paras = len([p for p in out_text.split("\n\n") if p.strip()])
-                words = len(out_text.split())
-                print_cli_report(init_res["ai_score"], scores["ai_score"], words, paras, scores, duration=dur)
-        return 0
-
-    if args.file:
-        src = Path(args.file)
-        if not src.exists():
-            print(f"Error: File '{src}' does not exist.", file=sys.stderr)
-            return 1
-
-        dst = Path(args.out) if args.out else src.with_name(f"{src.stem}_humanized{src.suffix}")
-
-        if src.suffix.lower() == ".docx":
-            import docx
-            from humanizer.document import iter_document_paragraphs
-            doc_in = docx.Document(str(src))
-            in_text = "\n\n".join(p.text for p in iter_document_paragraphs(doc_in) if p.text.strip())
-            init_res = score_text(in_text)
-
-            saved = humanize_docx(src, cfg, dst=dst)
-
-            doc_out = docx.Document(str(saved))
-            full_text = "\n\n".join(p.text for p in iter_document_paragraphs(doc_out) if p.text.strip())
-            scores = score_text(full_text)
-        else:
-            raw = src.read_text(encoding="utf-8")
-            init_res = score_text(raw)
-            out_text = humanize_text(raw, cfg)
+        if src is not None:
+            ext = ".txt" if src.suffix.lower() == ".pdf" else src.suffix
+            dst = Path(args.out) if args.out else src.with_name(f"{src.stem}_humanized{ext}")
             dst.write_text(out_text, encoding="utf-8")
-            scores = score_text(out_text)
-            full_text = out_text
+        elif args.out:
+            dst = Path(args.out)
+            dst.write_text(out_text, encoding="utf-8")
+    scores = score_text(out_text)
+    dur = time.time() - t0
 
-        dur = time.time() - t0
-        paras = len([p for p in full_text.split("\n\n") if p.strip()])
-        words = len(full_text.split())
-
-        if args.json:
-            report = {
-                "success": True,
-                "input_file": str(src),
-                "output_file": str(dst),
-                "initial_score": init_res.get("ai_score", 0.0),
-                "final_score": scores.get("ai_score", 0.0),
-                "metrics": scores,
-                "duration_seconds": round(dur, 2),
-            }
-            print(json.dumps(report, indent=2))
-        else:
-            if args.report or args.score:
-                print_cli_report(init_res["ai_score"], scores["ai_score"], words, paras, scores, dst=dst, duration=dur)
-            else:
-                print(f"Saved: {dst}")
+    if args.json:
+        print(json.dumps({
+            "success": True,
+            "input_file": str(src) if src else None,
+            "output_file": str(dst) if dst else None,
+            "output": out_text if dst is None else None,
+            "engine": cfg.engine_used,
+            "initial_score": init_res.get("ai_score", 0.0),
+            "final_score": scores.get("ai_score", 0.0),
+            "metrics": scores,
+            "integrity": lint_text(out_text, input_text),
+            "duration_seconds": round(dur, 2),
+        }, indent=2))
         return 0
-
-    # No arguments provided -> launch GUI
-    from humanizer.gui import launch_gui
-    launch_gui()
+    if dst is None:
+        sys.stdout.write(out_text if out_text.endswith("\n") else out_text + "\n")
+    if args.report or args.score:
+        paras = len([p for p in out_text.split("\n\n") if p.strip()])
+        print_cli_report(init_res["ai_score"], scores["ai_score"], len(out_text.split()), paras, scores, dst=dst, duration=dur)
+    elif dst is not None:
+        print(f"Saved: {dst}", file=sys.stderr)
     return 0
 
 

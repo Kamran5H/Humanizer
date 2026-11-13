@@ -1,1488 +1,629 @@
 <!DOCTYPE html>
-<html lang="en" data-theme="dark">
+<html lang="en">
 <head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Humanizer Pro Studio — Academic & Journal-Grade Stealth Suite</title>
-  <meta name="description" content="State-of-the-art stealth text humanization suite. Defeat AI detection with journal-grade academic prose, run-level DOCX preservation, and real-time telemetry.">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;600&family=Outfit:wght@300;400;500;600;700;800&family=Plus+Jakarta+Sans:ital,wght@0,300;0,400;0,500;0,600;0,700;1,400&display=swap" rel="stylesheet">
-  <style>
-    :root {
-      --font-display: 'Outfit', -apple-system, BlinkMacSystemFont, sans-serif;
-      --font-body: 'Plus Jakarta Sans', -apple-system, BlinkMacSystemFont, sans-serif;
-      --font-mono: 'JetBrains Mono', monospace;
-
-      /* Dark Theme Tokens (Default) */
-      --bg-base: #090D16;
-      --bg-surface: #0F172A;
-      --bg-surface-elevated: #162036;
-      --bg-surface-hover: #1E2B48;
-      --border-subtle: rgba(255, 255, 255, 0.08);
-      --border-focus: rgba(16, 185, 129, 0.5);
-      
-      --text-main: #F8FAFC;
-      --text-muted: #94A3B8;
-      --text-dim: #64748B;
-      
-      --accent-emerald: #10B981;
-      --accent-emerald-glow: rgba(16, 185, 129, 0.25);
-      --accent-cyan: #06B6D4;
-      --accent-gold: #F59E0B;
-      --accent-gold-glow: rgba(245, 158, 11, 0.25);
-      --accent-rose: #F43F5E;
-      --accent-rose-glow: rgba(244, 63, 94, 0.25);
-      --accent-purple: #8B5CF6;
-
-      --card-glass: rgba(15, 23, 42, 0.75);
-      --card-blur: blur(16px);
-      --shadow-ambient: 0 8px 32px 0 rgba(0, 0, 0, 0.37);
-      --shadow-glow: 0 0 30px -5px var(--accent-emerald-glow);
-
-      --diff-ins-bg: rgba(16, 185, 129, 0.2);
-      --diff-ins-border: rgba(16, 185, 129, 0.6);
-      --diff-del-bg: rgba(244, 63, 94, 0.2);
-      --diff-del-border: rgba(244, 63, 94, 0.6);
-      --diff-tell-bg: rgba(245, 158, 11, 0.25);
-    }
-
-    [data-theme="light"] {
-      --bg-base: #F8FAFC;
-      --bg-surface: #FFFFFF;
-      --bg-surface-elevated: #F1F5F9;
-      --bg-surface-hover: #E2E8F0;
-      --border-subtle: rgba(0, 0, 0, 0.08);
-      --border-focus: rgba(16, 185, 129, 0.6);
-      
-      --text-main: #0F172A;
-      --text-muted: #475569;
-      --text-dim: #94A3B8;
-
-      --card-glass: rgba(255, 255, 255, 0.85);
-      --shadow-ambient: 0 8px 30px 0 rgba(0, 0, 0, 0.08);
-      --shadow-glow: 0 0 25px -5px rgba(16, 185, 129, 0.3);
-
-      --diff-ins-bg: rgba(16, 185, 129, 0.15);
-      --diff-del-bg: rgba(244, 63, 94, 0.15);
-      --diff-tell-bg: rgba(245, 158, 11, 0.2);
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      font-family: var(--font-body);
-      background-color: var(--bg-base);
-      color: var(--text-main);
-      min-height: 100vh;
-      overflow-x: hidden;
-      line-height: 1.5;
-      background-image: 
-        radial-gradient(circle at 15% 10%, rgba(16, 185, 129, 0.08) 0%, transparent 40%),
-        radial-gradient(circle at 85% 90%, rgba(6, 182, 212, 0.08) 0%, transparent 45%);
-      transition: background-color 0.3s ease, color 0.3s ease;
-    }
-
-    /* Container */
-    .app-container {
-      max-width: 1600px;
-      margin: 0 auto;
-      padding: 20px 32px 40px;
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-      min-height: 100vh;
-    }
-
-    /* Header Nav */
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding: 14px 24px;
-      background: var(--card-glass);
-      backdrop-filter: var(--card-blur);
-      border: 1px solid var(--border-subtle);
-      border-radius: 16px;
-      box-shadow: var(--shadow-ambient);
-    }
-
-    .brand-group {
-      display: flex;
-      align-items: center;
-      gap: 14px;
-    }
-
-    .brand-badge {
-      width: 42px;
-      height: 42px;
-      border-radius: 12px;
-      background: linear-gradient(135deg, var(--accent-emerald), var(--accent-cyan));
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      box-shadow: 0 4px 16px var(--accent-emerald-glow);
-      color: #FFFFFF;
-      font-family: var(--font-display);
-      font-weight: 800;
-      font-size: 20px;
-    }
-
-    .brand-title-wrap h1 {
-      font-family: var(--font-display);
-      font-size: 22px;
-      font-weight: 700;
-      letter-spacing: -0.02em;
-      background: linear-gradient(to right, #FFFFFF, #94A3B8);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    [data-theme="light"] .brand-title-wrap h1 {
-      background: linear-gradient(to right, #0F172A, #334155);
-      -webkit-background-clip: text;
-      -webkit-text-fill-color: transparent;
-    }
-
-    .brand-subtitle {
-      font-size: 12px;
-      color: var(--text-muted);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .pill-tag {
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 10px;
-      font-weight: 600;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      background: rgba(16, 185, 129, 0.15);
-      color: var(--accent-emerald);
-      border: 1px solid rgba(16, 185, 129, 0.3);
-    }
-
-    .header-actions {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-    }
-
-    /* Buttons */
-    .btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      gap: 8px;
-      font-family: var(--font-body);
-      font-weight: 600;
-      font-size: 13px;
-      padding: 9px 18px;
-      border-radius: 10px;
-      border: 1px solid transparent;
-      cursor: pointer;
-      transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-      text-decoration: none;
-      user-select: none;
-    }
-
-    .btn-hero {
-      background: linear-gradient(135deg, #10B981, #059669);
-      color: #FFFFFF;
-      box-shadow: 0 4px 20px var(--accent-emerald-glow);
-      font-size: 14px;
-      padding: 10px 24px;
-    }
-
-    .btn-hero:hover {
-      transform: translateY(-2px);
-      box-shadow: 0 6px 25px rgba(16, 185, 129, 0.4);
-    }
-
-    .btn-hero:active {
-      transform: translateY(0);
-    }
-
-    .btn-hero:disabled {
-      opacity: 0.5;
-      cursor: not-allowed;
-      transform: none;
-      box-shadow: none;
-    }
-
-    .btn-secondary {
-      background: var(--bg-surface-elevated);
-      color: var(--text-main);
-      border: 1px solid var(--border-subtle);
-    }
-
-    .btn-secondary:hover {
-      background: var(--bg-surface-hover);
-      border-color: rgba(255, 255, 255, 0.2);
-    }
-
-    .btn-icon-only {
-      width: 38px;
-      height: 38px;
-      padding: 0;
-      border-radius: 10px;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      background: var(--bg-surface-elevated);
-      color: var(--text-muted);
-      border: 1px solid var(--border-subtle);
-    }
-
-    .btn-icon-only:hover {
-      color: var(--text-main);
-      border-color: rgba(255, 255, 255, 0.2);
-    }
-
-    /* Live Telemetry Radar HUD */
-    .radar-hud {
-      display: grid;
-      grid-template-columns: 240px 1fr;
-      gap: 20px;
-      background: var(--card-glass);
-      backdrop-filter: var(--card-blur);
-      border: 1px solid var(--border-subtle);
-      border-radius: 16px;
-      padding: 20px 24px;
-      box-shadow: var(--shadow-ambient);
-    }
-
-    @media (max-width: 1024px) {
-      .radar-hud {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .gauge-card {
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-      padding: 10px;
-      border-right: 1px solid var(--border-subtle);
-    }
-
-    @media (max-width: 1024px) {
-      .gauge-card {
-        border-right: none;
-        border-bottom: 1px solid var(--border-subtle);
-        padding-bottom: 20px;
-      }
-    }
-
-    .radial-dial-wrap {
-      position: relative;
-      width: 150px;
-      height: 150px;
-    }
-
-    .radial-svg {
-      transform: rotate(-90deg);
-      width: 100%;
-      height: 100%;
-    }
-
-    .radial-bg {
-      stroke: var(--bg-surface-hover);
-      stroke-width: 10;
-      fill: none;
-    }
-
-    .radial-fill {
-      stroke: var(--accent-emerald);
-      stroke-width: 10;
-      stroke-linecap: round;
-      fill: none;
-      stroke-dasharray: 408;
-      stroke-dashoffset: 408;
-      transition: stroke-dashoffset 1s cubic-bezier(0.4, 0, 0.2, 1), stroke 0.5s ease;
-      filter: drop-shadow(0 0 6px var(--accent-emerald-glow));
-    }
-
-    .dial-center-content {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      display: flex;
-      flex-direction: column;
-      align-items: center;
-      justify-content: center;
-    }
-
-    .dial-score-num {
-      font-family: var(--font-display);
-      font-size: 34px;
-      font-weight: 800;
-      line-height: 1;
-      letter-spacing: -0.02em;
-    }
-
-    .dial-score-pct {
-      font-size: 14px;
-      color: var(--text-dim);
-      font-weight: 500;
-    }
-
-    .dial-label {
-      margin-top: 10px;
-      font-size: 12px;
-      font-weight: 700;
-      text-transform: uppercase;
-      letter-spacing: 0.05em;
-      color: var(--accent-emerald);
-      text-align: center;
-    }
-
-    /* Metric Tiles Grid */
-    .metrics-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-      gap: 14px;
-      align-items: center;
-    }
-
-    .metric-tile {
-      background: var(--bg-surface-elevated);
-      border: 1px solid var(--border-subtle);
-      border-radius: 12px;
-      padding: 14px 16px;
-      transition: transform 0.2s ease, border-color 0.2s ease;
-      display: flex;
-      flex-direction: column;
-      gap: 4px;
-    }
-
-    .metric-tile:hover {
-      transform: translateY(-2px);
-      border-color: rgba(255, 255, 255, 0.15);
-    }
-
-    .metric-title {
-      font-size: 11px;
-      font-weight: 600;
-      color: var(--text-dim);
-      text-transform: uppercase;
-      letter-spacing: 0.04em;
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-    }
-
-    .metric-value {
-      font-family: var(--font-mono);
-      font-size: 20px;
-      font-weight: 700;
-      color: var(--text-main);
-    }
-
-    .metric-sub {
-      font-size: 11px;
-      color: var(--text-muted);
-    }
-
-    /* Studio Controls & Action Bar */
-    .action-bar {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      flex-wrap: wrap;
-      background: var(--card-glass);
-      backdrop-filter: var(--card-blur);
-      border: 1px solid var(--border-subtle);
-      border-radius: 14px;
-      padding: 12px 20px;
-    }
-
-    .control-group {
-      display: flex;
-      align-items: center;
-      gap: 12px;
-      flex-wrap: wrap;
-    }
-
-    .select-wrap {
-      position: relative;
-    }
-
-    .select-custom {
-      appearance: none;
-      background: var(--bg-surface-elevated);
-      color: var(--text-main);
-      border: 1px solid var(--border-subtle);
-      border-radius: 8px;
-      padding: 8px 32px 8px 12px;
-      font-family: var(--font-body);
-      font-size: 13px;
-      font-weight: 500;
-      cursor: pointer;
-      outline: none;
-      transition: border-color 0.2s;
-    }
-
-    .select-custom:focus {
-      border-color: var(--accent-emerald);
-    }
-
-    .select-arrow {
-      position: absolute;
-      right: 10px;
-      top: 50%;
-      transform: translateY(-50%);
-      pointer-events: none;
-      color: var(--text-dim);
-      font-size: 10px;
-    }
-
-    .view-toggles {
-      display: flex;
-      background: var(--bg-surface-elevated);
-      border-radius: 8px;
-      padding: 3px;
-      border: 1px solid var(--border-subtle);
-    }
-
-    .toggle-opt {
-      padding: 6px 14px;
-      border-radius: 6px;
-      font-size: 12px;
-      font-weight: 600;
-      cursor: pointer;
-      color: var(--text-muted);
-      transition: all 0.2s;
-      border: none;
-      background: transparent;
-    }
-
-    .toggle-opt.active {
-      background: var(--bg-surface);
-      color: var(--text-main);
-      box-shadow: 0 2px 8px rgba(0, 0, 0, 0.2);
-    }
-
-    /* Live Progress Bar */
-    .progress-strip {
-      background: var(--card-glass);
-      border: 1px solid var(--border-subtle);
-      border-radius: 12px;
-      padding: 10px 18px;
-      display: none;
-      flex-direction: column;
-      gap: 6px;
-      box-shadow: var(--shadow-ambient);
-      animation: fadeIn 0.3s ease;
-    }
-
-    .progress-strip.visible {
-      display: flex;
-    }
-
-    .progress-meta {
-      display: flex;
-      justify-content: space-between;
-      font-size: 12px;
-      color: var(--text-muted);
-    }
-
-    .progress-msg {
-      font-weight: 500;
-      color: var(--text-main);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .pulse-dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--accent-emerald);
-      animation: pulse 1.5s infinite;
-    }
-
-    @keyframes pulse {
-      0% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.7); }
-      70% { transform: scale(1.1); box-shadow: 0 0 0 8px rgba(16, 185, 129, 0); }
-      100% { transform: scale(0.95); box-shadow: 0 0 0 0 rgba(16, 185, 129, 0); }
-    }
-
-    .progress-track {
-      width: 100%;
-      height: 8px;
-      background: var(--bg-surface-hover);
-      border-radius: 999px;
-      overflow: hidden;
-      position: relative;
-    }
-
-    .progress-bar-fill {
-      height: 100%;
-      width: 0%;
-      background: linear-gradient(90deg, var(--accent-emerald), var(--accent-cyan));
-      border-radius: 999px;
-      transition: width 0.3s ease;
-      box-shadow: 0 0 12px var(--accent-emerald-glow);
-    }
-
-    /* Studio Dual Workspaces */
-    .studio-panes {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 20px;
-      flex: 1;
-      min-height: 480px;
-    }
-
-    @media (max-width: 900px) {
-      .studio-panes {
-        grid-template-columns: 1fr;
-      }
-    }
-
-    .editor-pane {
-      display: flex;
-      flex-direction: column;
-      background: var(--card-glass);
-      backdrop-filter: var(--card-blur);
-      border: 1px solid var(--border-subtle);
-      border-radius: 16px;
-      overflow: hidden;
-      box-shadow: var(--shadow-ambient);
-      position: relative;
-      transition: border-color 0.2s ease;
-    }
-
-    .editor-pane:focus-within {
-      border-color: var(--border-focus);
-    }
-
-    .pane-header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      padding: 12px 18px;
-      background: var(--bg-surface-elevated);
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .pane-title {
-      font-size: 13px;
-      font-weight: 700;
-      color: var(--text-main);
-      display: flex;
-      align-items: center;
-      gap: 8px;
-    }
-
-    .pane-stats {
-      font-size: 11px;
-      color: var(--text-dim);
-      font-family: var(--font-mono);
-    }
-
-    .editor-body {
-      flex: 1;
-      position: relative;
-      display: flex;
-      flex-direction: column;
-    }
-
-    textarea.editor-textarea {
-      width: 100%;
-      flex: 1;
-      min-height: 400px;
-      background: transparent;
-      border: none;
-      outline: none;
-      padding: 20px;
-      color: var(--text-main);
-      font-family: var(--font-body);
-      font-size: 14.5px;
-      line-height: 1.75;
-      resize: none;
-    }
-
-    textarea.editor-textarea::placeholder {
-      color: var(--text-dim);
-    }
-
-    /* Diff Viewer Container */
-    .diff-container {
-      display: none;
-      flex: 1;
-      padding: 20px;
-      overflow-y: auto;
-      font-family: var(--font-body);
-      font-size: 14.5px;
-      line-height: 1.8;
-      color: var(--text-main);
-      white-space: pre-wrap;
-    }
-
-    .diff-container.active {
-      display: block;
-    }
-
-    .diff-ins {
-      background: var(--diff-ins-bg);
-      border-bottom: 2px solid var(--diff-ins-border);
-      color: #34D399;
-      padding: 1px 3px;
-      border-radius: 3px;
-    }
-
-    .diff-del {
-      background: var(--diff-del-bg);
-      border-bottom: 2px solid var(--diff-del-border);
-      color: #FB7185;
-      text-decoration: line-through;
-      padding: 1px 3px;
-      border-radius: 3px;
-      opacity: 0.8;
-    }
-
-    .diff-tell {
-      background: var(--diff-tell-bg);
-      border-bottom: 2px solid var(--accent-gold);
-      color: var(--accent-gold);
-      padding: 1px 4px;
-      border-radius: 3px;
-      font-weight: 600;
-    }
-
-    /* File Drop Overlay */
-    .drop-overlay {
-      position: absolute;
-      top: 0;
-      left: 0;
-      width: 100%;
-      height: 100%;
-      background: rgba(15, 23, 42, 0.9);
-      backdrop-filter: blur(8px);
-      border: 2px dashed var(--accent-emerald);
-      border-radius: 16px;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      flex-direction: column;
-      gap: 12px;
-      z-index: 50;
-      pointer-events: none;
-      animation: fadeIn 0.2s ease;
-    }
-
-    .drop-overlay.active {
-      display: flex;
-      pointer-events: auto;
-    }
-
-    .drop-icon {
-      font-size: 44px;
-      color: var(--accent-emerald);
-    }
-
-    /* Settings Modal / Drawer */
-    .modal-backdrop {
-      position: fixed;
-      top: 0;
-      left: 0;
-      width: 100vw;
-      height: 100vh;
-      background: rgba(0, 0, 0, 0.7);
-      backdrop-filter: blur(6px);
-      display: none;
-      align-items: center;
-      justify-content: center;
-      z-index: 100;
-      padding: 20px;
-    }
-
-    .modal-backdrop.open {
-      display: flex;
-    }
-
-    .modal-box {
-      background: var(--bg-surface);
-      border: 1px solid var(--border-subtle);
-      border-radius: 20px;
-      width: 100%;
-      max-width: 680px;
-      max-height: 90vh;
-      overflow-y: auto;
-      padding: 28px;
-      box-shadow: 0 20px 50px rgba(0, 0, 0, 0.5);
-      display: flex;
-      flex-direction: column;
-      gap: 20px;
-      animation: slideUp 0.3s cubic-bezier(0.16, 1, 0.3, 1);
-    }
-
-    @keyframes slideUp {
-      from { transform: translateY(20px); opacity: 0; }
-      to { transform: translateY(0); opacity: 1; }
-    }
-
-    @keyframes fadeIn {
-      from { opacity: 0; }
-      to { opacity: 1; }
-    }
-
-    .modal-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      border-bottom: 1px solid var(--border-subtle);
-      padding-bottom: 16px;
-    }
-
-    .modal-header h2 {
-      font-family: var(--font-display);
-      font-size: 20px;
-      font-weight: 700;
-    }
-
-    .provider-table {
-      width: 100%;
-      border-collapse: collapse;
-      font-size: 12px;
-      margin-top: 8px;
-    }
-
-    .provider-table th, .provider-table td {
-      padding: 8px 12px;
-      text-align: left;
-      border-bottom: 1px solid var(--border-subtle);
-    }
-
-    .provider-table th {
-      color: var(--text-dim);
-      font-weight: 600;
-      text-transform: uppercase;
-    }
-
-    .status-badge {
-      display: inline-flex;
-      align-items: center;
-      gap: 6px;
-      padding: 2px 8px;
-      border-radius: 999px;
-      font-size: 11px;
-      font-weight: 600;
-    }
-
-    .status-ready { background: rgba(16, 185, 129, 0.15); color: #34D399; }
-    .status-cooling { background: rgba(245, 158, 11, 0.15); color: #FBBF24; }
-    .status-throttled { background: rgba(6, 182, 212, 0.15); color: #22D3EE; }
-
-    /* Toast */
-    .toast-tray {
-      position: fixed;
-      bottom: 24px;
-      right: 24px;
-      display: flex;
-      flex-direction: column;
-      gap: 10px;
-      z-index: 1000;
-    }
-
-    .toast {
-      background: var(--bg-surface-elevated);
-      border: 1px solid var(--border-subtle);
-      border-radius: 10px;
-      padding: 12px 18px;
-      font-size: 13px;
-      font-weight: 500;
-      color: var(--text-main);
-      box-shadow: 0 10px 30px rgba(0, 0, 0, 0.4);
-      display: flex;
-      align-items: center;
-      gap: 10px;
-      animation: toastIn 0.3s ease;
-    }
-
-    @keyframes toastIn {
-      from { transform: translateX(50px); opacity: 0; }
-      to { transform: translateX(0); opacity: 1; }
-    }
-  </style>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Humanizer Pro Studio</title>
+<meta name="description" content="Rewrite AI-sounding text into natural prose, with a local explainable AI-likelihood score.">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%23059669'/%3E%3Cpath d='M9 22V10h3v4.5h8V10h3v12h-3v-4.6h-8V22z' fill='white'/%3E%3C/svg%3E">
+<style>
+:root{
+  --bg:#f6f7f9;--surface:#ffffff;--surface-2:#f1f3f6;--surface-3:#e8ebf0;--border:#e2e5ea;--border-strong:#cfd4dc;
+  --text:#14171c;--text-2:#4a5260;--text-3:#7a8392;
+  --accent:#059669;--accent-strong:#047857;--accent-soft:#e6f6f0;--on-accent:#ffffff;
+  --good:#16a34a;--warn:#d97706;--bad:#dc2626;--info:#2563eb;
+  --good-soft:#e8f7ee;--warn-soft:#fdf3e2;--bad-soft:#fdecec;
+  --ins:#d9f5e6;--del:#fde2e2;--mark:#fff1c2;--mark-line:#e6b400;
+  --shadow:0 1px 2px rgba(16,24,40,.05),0 4px 16px rgba(16,24,40,.06);
+  --radius:14px;--radius-sm:9px;
+  --font:ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,"Helvetica Neue",Arial,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,"Liberation Mono",monospace;
+  --serif:"Iowan Old Style","Palatino Linotype",Palatino,Georgia,serif;
+}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){
+  --bg:#0d1014;--surface:#151a20;--surface-2:#1b2129;--surface-3:#232b35;--border:#262e39;--border-strong:#35404d;
+  --text:#e9edf2;--text-2:#aab3c0;--text-3:#7b8594;
+  --accent:#34d399;--accent-strong:#10b981;--accent-soft:#11291f;--on-accent:#06281c;
+  --good:#4ade80;--warn:#fbbf24;--bad:#f87171;--info:#60a5fa;
+  --good-soft:#12291b;--warn-soft:#2c2210;--bad-soft:#2e1515;
+  --ins:#123b29;--del:#3d1a1a;--mark:#3b3112;--mark-line:#d4a514;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 24px rgba(0,0,0,.25);
+}}
+:root[data-theme="dark"]{
+  --bg:#0d1014;--surface:#151a20;--surface-2:#1b2129;--surface-3:#232b35;--border:#262e39;--border-strong:#35404d;
+  --text:#e9edf2;--text-2:#aab3c0;--text-3:#7b8594;
+  --accent:#34d399;--accent-strong:#10b981;--accent-soft:#11291f;--on-accent:#06281c;
+  --good:#4ade80;--warn:#fbbf24;--bad:#f87171;--info:#60a5fa;
+  --good-soft:#12291b;--warn-soft:#2c2210;--bad-soft:#2e1515;
+  --ins:#123b29;--del:#3d1a1a;--mark:#3b3112;--mark-line:#d4a514;
+  --shadow:0 1px 2px rgba(0,0,0,.3),0 6px 24px rgba(0,0,0,.25);
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%}
+body{background:var(--bg);color:var(--text);font:14px/1.5 var(--font);-webkit-font-smoothing:antialiased}
+button,select,input,textarea{font:inherit;color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+[hidden]{display:none!important}
+.sr{position:absolute;width:1px;height:1px;overflow:hidden;clip:rect(0 0 0 0)}
+
+/* Header */
+.top{position:sticky;top:0;z-index:20;background:color-mix(in srgb,var(--bg) 88%,transparent);backdrop-filter:blur(10px);border-bottom:1px solid var(--border)}
+.top-in{max-width:1480px;margin:0 auto;padding:10px 20px;display:flex;align-items:center;gap:14px}
+.brand{display:flex;align-items:center;gap:10px;font-weight:700;font-size:16px;letter-spacing:-.01em}
+.logo{width:30px;height:30px;border-radius:8px;background:linear-gradient(135deg,var(--accent),#0ea5e9);display:grid;place-items:center;color:#fff;font-weight:800;font-size:15px}
+.brand small{display:block;font-weight:500;font-size:11.5px;color:var(--text-3);letter-spacing:0}
+.spacer{flex:1}
+.pill{display:inline-flex;align-items:center;gap:7px;padding:5px 11px;border-radius:999px;border:1px solid var(--border);background:var(--surface);font-size:12.5px;color:var(--text-2);white-space:nowrap}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--text-3)}
+.dot.ok{background:var(--good);box-shadow:0 0 0 3px color-mix(in srgb,var(--good) 25%,transparent)}
+.dot.warn{background:var(--warn)}
+.icon-btn{width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:var(--surface);display:grid;place-items:center;color:var(--text-2)}
+.icon-btn:hover{background:var(--surface-2);color:var(--text)}
+
+/* Layout */
+.wrap{max-width:1480px;margin:0 auto;padding:16px 20px 40px;display:grid;grid-template-columns:minmax(0,1fr) 330px;gap:16px}
+@media (max-width:1100px){.wrap{grid-template-columns:1fr}}
+.card{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);box-shadow:var(--shadow)}
+
+/* Controls */
+.controls{display:flex;flex-wrap:wrap;align-items:center;gap:12px 18px;padding:12px 14px}
+.ctl{display:flex;flex-direction:column;gap:5px}
+.ctl>span{font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3)}
+.seg{display:inline-flex;background:var(--surface-2);border:1px solid var(--border);border-radius:10px;padding:3px}
+.seg button{border:0;background:transparent;padding:6px 12px;border-radius:7px;color:var(--text-2);font-weight:550;font-size:13px}
+.seg button[aria-pressed="true"]{background:var(--surface);color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,.12)}
+.seg button:hover:not([aria-pressed="true"]){color:var(--text)}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:7px;border-radius:10px;border:1px solid var(--border);background:var(--surface);padding:8px 13px;font-weight:600;font-size:13px;color:var(--text);white-space:nowrap}
+.btn:hover{background:var(--surface-2)}
+.btn:disabled{opacity:.5;cursor:not-allowed}
+.btn.sm{padding:5px 8px;font-size:12.5px;border-radius:8px}
+.btn.ghost{border-color:transparent;background:transparent;color:var(--text-2)}
+.btn.ghost:hover{background:var(--surface-2);color:var(--text)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:var(--on-accent);padding:10px 20px;font-size:14px;box-shadow:0 4px 14px color-mix(in srgb,var(--accent) 35%,transparent)}
+.btn.primary:hover{background:var(--accent-strong)}
+.btn.danger{color:var(--bad)}
+.kbd{font:11px var(--mono);padding:1px 5px;border-radius:5px;border:1px solid color-mix(in srgb,currentColor 35%,transparent);opacity:.8}
+.run{margin-left:auto;display:flex;align-items:center;gap:10px}
+
+/* Progress */
+.progress{display:none;padding:10px 14px 12px;border-top:1px solid var(--border)}
+.progress.on{display:block}
+.prog-row{display:flex;justify-content:space-between;font-size:12.5px;color:var(--text-2);margin-bottom:7px}
+.bar{height:6px;border-radius:99px;background:var(--surface-3);overflow:hidden}
+.bar>i{display:block;height:100%;width:0;background:linear-gradient(90deg,var(--accent),#0ea5e9);border-radius:99px;transition:width .35s ease}
+.bar.indet>i{width:30%;animation:indet 1.2s ease-in-out infinite}
+@keyframes indet{0%{transform:translateX(-100%)}100%{transform:translateX(350%)}}
+
+/* Panes */
+.panes{display:grid;grid-template-columns:1fr 1fr;gap:16px;margin-top:16px}
+@media (max-width:820px){.panes{grid-template-columns:1fr}}
+.pane{display:flex;flex-direction:column;min-height:540px;overflow:hidden}
+.pane-head{display:flex;flex-wrap:wrap;align-items:center;gap:6px 8px;padding:10px 12px;border-bottom:1px solid var(--border)}
+.pane-head .spacer{min-width:4px}
+.pane-title{font-weight:650;font-size:13.5px;display:flex;align-items:center;gap:8px}
+.chip{white-space:nowrap;font-size:11.5px;font-weight:650;padding:2px 8px;border-radius:999px;background:var(--surface-2);color:var(--text-2);border:1px solid var(--border)}
+.chip.good{background:var(--good-soft);color:var(--good);border-color:transparent}
+.chip.warn{background:var(--warn-soft);color:var(--warn);border-color:transparent}
+.chip.bad{background:var(--bad-soft);color:var(--bad);border-color:transparent}
+.tabs{display:inline-flex;gap:2px;margin-left:2px}
+.tabs button{border:0;background:transparent;padding:5px 9px;border-radius:7px;font-size:12.5px;font-weight:600;color:var(--text-3)}
+.tabs button[aria-selected="true"]{background:var(--surface-2);color:var(--text)}
+.pane-body{position:relative;flex:1;display:flex}
+.editor,.view{flex:1;width:100%;border:0;resize:none;outline:none;background:transparent;padding:16px 18px;font:15.5px/1.7 var(--serif);color:var(--text);overflow:auto;white-space:pre-wrap;word-wrap:break-word}
+.view{display:none}
+.view.on{display:block}
+.editor.off{display:none}
+.editor::placeholder{color:var(--text-3);font-family:var(--font);font-size:14px}
+.pane-foot{display:flex;align-items:center;gap:10px;padding:8px 12px;border-top:1px solid var(--border);font-size:12px;color:var(--text-3)}
+.empty{position:absolute;inset:0;display:grid;place-items:center;text-align:center;color:var(--text-3);pointer-events:none;padding:30px}
+.empty b{display:block;color:var(--text-2);font-size:15px;margin-bottom:4px}
+.drop{position:absolute;inset:8px;border:2px dashed var(--accent);border-radius:12px;background:color-mix(in srgb,var(--accent-soft) 85%,transparent);display:none;place-items:center;font-weight:650;color:var(--accent-strong);z-index:2}
+.drop.on{display:grid}
+mark.t{background:var(--mark);color:inherit;border-bottom:2px solid var(--mark-line);border-radius:3px;padding:0 1px;cursor:help}
+mark.t.flash{animation:flash 1.2s ease}
+@keyframes flash{0%,100%{box-shadow:none}30%{box-shadow:0 0 0 4px color-mix(in srgb,var(--mark-line) 45%,transparent)}}
+.s-hot{background:linear-gradient(transparent 60%,color-mix(in srgb,var(--bad) 18%,transparent) 60%)}
+ins{background:var(--ins);text-decoration:none;border-radius:3px;padding:0 1px}
+del{background:var(--del);color:var(--text-2);border-radius:3px;padding:0 1px}
+
+/* Sidebar */
+.side{display:flex;flex-direction:column;gap:16px}
+.sec{padding:14px}
+.sec h3{margin:0 0 10px;font-size:12px;font-weight:700;text-transform:uppercase;letter-spacing:.06em;color:var(--text-3);display:flex;align-items:center;justify-content:space-between}
+.gauge{display:flex;align-items:center;gap:16px}
+.ring{position:relative;width:112px;height:112px;flex:none}
+.ring svg{transform:rotate(-90deg)}
+.ring .track{stroke:var(--surface-3)}
+.ring .val{transition:stroke-dashoffset .6s ease,stroke .3s}
+.ring .num{position:absolute;inset:0;display:grid;place-items:center;text-align:center}
+.ring .num b{font-size:28px;font-weight:750;letter-spacing:-.02em;line-height:1}
+.ring .num small{display:block;font-size:10.5px;color:var(--text-3);margin-top:3px;text-transform:uppercase;letter-spacing:.06em}
+.verdict{font-weight:650;font-size:14px}
+.sub{color:var(--text-3);font-size:12.5px}
+.compare{display:flex;align-items:center;gap:8px;margin-top:8px;font-size:13px}
+.compare .arrow{color:var(--text-3)}
+.delta{font-weight:700;color:var(--good)}
+.sig{margin-top:12px;display:grid;gap:9px}
+.sig-row{display:grid;grid-template-columns:1fr auto;gap:4px 8px;font-size:12.5px}
+.sig-row .lbl{color:var(--text-2);font-weight:550}
+.sig-row .pct{color:var(--text-3);font-variant-numeric:tabular-nums}
+.sig-row .bar{grid-column:1/-1;height:5px}
+.sig-row .hint{grid-column:1/-1;color:var(--text-3);font-size:11.5px}
+.tells{list-style:none;margin:0;padding:0;display:grid;gap:6px;max-height:300px;overflow:auto}
+.tells li{display:flex;gap:8px;align-items:flex-start;padding:7px 9px;border:1px solid var(--border);border-radius:9px;background:var(--surface-2);cursor:pointer;font-size:12.5px}
+.tells li:hover{border-color:var(--border-strong)}
+.tells .w{font-weight:650}
+.tells .s{color:var(--text-3)}
+.tells .c{margin-left:auto;font-size:10.5px;color:var(--text-3);white-space:nowrap}
+.checks{list-style:none;margin:0;padding:0;display:grid;gap:6px;font-size:12.5px}
+.checks li{display:flex;gap:8px;align-items:flex-start}
+.checks .ic{flex:none;width:16px;height:16px;border-radius:50%;display:grid;place-items:center;font-size:10px;font-weight:800;color:#fff;margin-top:1px}
+.ok-ic{background:var(--good)}.warn-ic{background:var(--warn)}.err-ic{background:var(--bad)}
+.stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.stat{background:var(--surface-2);border-radius:9px;padding:8px 10px}
+.stat b{display:block;font-size:16px;font-variant-numeric:tabular-nums}
+.stat span{font-size:11px;color:var(--text-3)}
+.muted{color:var(--text-3);font-size:12.5px}
+
+/* Menus, modal, toast */
+.menu{position:relative}
+.menu-list{position:absolute;right:0;top:calc(100% + 6px);min-width:180px;background:var(--surface);border:1px solid var(--border);border-radius:11px;box-shadow:var(--shadow);padding:5px;display:none;z-index:30}
+.menu-list.on{display:block}
+.menu-list button{display:block;width:100%;text-align:left;border:0;background:transparent;padding:7px 10px;border-radius:7px;font-size:13px}
+.menu-list button:hover{background:var(--surface-2)}
+.modal{position:fixed;inset:0;background:rgba(5,8,12,.5);display:none;place-items:center;z-index:50;padding:16px}
+.modal.on{display:grid}
+.modal-card{width:min(760px,100%);max-height:82vh;overflow:auto;padding:18px}
+.modal-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.modal-head h2{margin:0;font-size:17px}
+table{width:100%;border-collapse:collapse;font-size:12.5px}
+th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--border)}
+th{color:var(--text-3);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.05em}
+code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-radius:5px}
+.toasts{position:fixed;bottom:18px;left:50%;transform:translateX(-50%);display:grid;gap:8px;z-index:60;width:min(420px,calc(100% - 32px))}
+.toast{background:var(--text);color:var(--bg);padding:10px 14px;border-radius:11px;font-size:13px;box-shadow:var(--shadow);animation:up .25s ease}
+.toast.err{background:var(--bad);color:#fff}
+@keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+.foot{max-width:1480px;margin:0 auto;padding:0 20px 24px;color:var(--text-3);font-size:12px;display:flex;gap:16px;flex-wrap:wrap}
+@media (max-width:640px){
+  .top-in{padding:10px 16px}.wrap{padding:12px 16px 32px}.brand small{display:none}
+  .run{margin-left:0;width:100%}.run .btn.primary{flex:1}
+  .pane{min-height:380px}
+}
+</style>
 </head>
 <body>
+<header class="top">
+  <div class="top-in">
+    <div class="brand"><div class="logo" aria-hidden="true">H</div><div>Humanizer Pro<small>Natural rewriting with a local AI-likelihood score</small></div></div>
+    <div class="spacer"></div>
+    <button class="pill" id="enginePill" title="Rewrite engine status"><span class="dot" id="engineDot"></span><span id="engineText">Checking…</span></button>
+    <button class="icon-btn" id="btnTheme" title="Toggle theme (light / dark)" aria-label="Toggle theme">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/></svg>
+    </button>
+  </div>
+</header>
 
-  <div class="app-container">
-    <!-- Header -->
-    <header>
-      <div class="brand-group">
-        <div class="brand-badge">H</div>
-        <div class="brand-title-wrap">
-          <h1>Humanizer Pro Studio</h1>
-          <div class="brand-subtitle">
-            <span>Academic & Journal-Grade Stealth Rewriting Suite</span>
-            <span class="pill-tag">v5.1 Enterprise</span>
+<main class="wrap">
+  <section>
+    <div class="card">
+      <div class="controls">
+        <div class="ctl"><span>Register</span>
+          <div class="seg" role="group" aria-label="Register" id="segRegister">
+            <button data-v="academic" aria-pressed="true" title="Formal: no contractions, technical terms untouched">Academic</button>
+            <button data-v="general" aria-pressed="false" title="Conversational professional prose">General</button>
           </div>
         </div>
+        <div class="ctl"><span>Strength</span>
+          <div class="seg" role="group" aria-label="Strength" id="segLevel">
+            <button data-v="1" aria-pressed="false" title="One rewrite per paragraph — fastest">Light</button>
+            <button data-v="2" aria-pressed="false" title="Several candidates, keeps the most human-sounding">Balanced</button>
+            <button data-v="3" aria-pressed="true" title="Best-of-N plus sentence-level refinement">Max</button>
+          </div>
+        </div>
+        <div class="ctl"><span>Engine</span>
+          <div class="seg" role="group" aria-label="Engine" id="segEngine">
+            <button data-v="auto" aria-pressed="true" title="Use the LLM pool when an API key is configured, offline rules otherwise">Auto</button>
+            <button data-v="offline" aria-pressed="false" title="Never send text anywhere — offline rule engine only">Offline</button>
+          </div>
+        </div>
+        <div class="run">
+          <button class="btn danger" id="btnCancel" hidden>Cancel <span class="kbd">Esc</span></button>
+          <button class="btn primary" id="btnRun">
+            <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l1.9 4.6L18.5 9l-4.6 1.9L12 15.5l-1.9-4.6L5.5 9l4.6-1.4z"/><path d="M19 15l.8 2.2L22 18l-2.2.8L19 21l-.8-2.2L16 18l2.2-.8z"/></svg>
+            Humanize <span class="kbd">Ctrl ↵</span>
+          </button>
+        </div>
+      </div>
+      <div class="progress" id="progress">
+        <div class="prog-row"><span id="progMsg">Starting…</span><span id="progPct">0%</span></div>
+        <div class="bar" id="progBar"><i></i></div>
+      </div>
+    </div>
+
+    <div class="panes">
+      <div class="card pane" id="paneIn">
+        <div class="pane-head">
+          <div class="pane-title">Original <span class="chip" id="chipIn" title="Local AI-likelihood estimate">—</span></div>
+          <div class="tabs" role="tablist">
+            <button role="tab" aria-selected="true" id="tabEdit">Edit</button>
+            <button role="tab" aria-selected="false" id="tabMarks">Highlight</button>
+          </div>
+          <div class="spacer"></div>
+          <input type="file" id="file" accept=".docx,.pdf,.txt,.md" class="sr">
+          <button class="btn sm ghost" id="btnUpload" title="Open .docx, .pdf, .txt or .md">Open file</button>
+          <button class="btn sm ghost" id="btnSample" title="Load sample AI text">Sample</button>
+          <button class="btn sm ghost" id="btnClear" title="Clear">Clear</button>
+        </div>
+        <div class="pane-body" id="dropZone">
+          <textarea class="editor" id="txtIn" spellcheck="true" placeholder="Paste AI-generated text here, or drop a .docx / .pdf / .txt / .md file…"></textarea>
+          <div class="view" id="marksView" tabindex="0" aria-label="Highlighted analysis"></div>
+          <div class="drop" id="dropOverlay">Drop to open</div>
+        </div>
+        <div class="pane-foot"><span id="statsIn">0 words</span><span class="spacer"></span><span id="fileTag"></span></div>
       </div>
 
-      <div class="header-actions">
-        <input type="file" id="fileInput" accept=".docx,.pdf,.txt" style="display: none;">
-        <button class="btn btn-secondary" id="btnUpload" title="Upload DOCX, PDF, or Text document">
-          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l-4-4m0 0L8 8m4-4v12"/></svg>
-          Upload Document
-        </button>
-        <button class="btn btn-secondary" id="btnProviders" title="Provider Pool Latency & Health Matrix">
-          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 11H5m14 0a2 2 0 012 2v6a2 2 0 01-2 2H5a2 2 0 01-2-2v-6a2 2 0 012-2m14 0V9a2 2 0 00-2-2M5 11V9a2 2 0 012-2m0 0V5a2 2 0 012-2h6a2 2 0 012 2v2M7 7h10"/></svg>
-          AI Providers (<span id="providerCount">14</span>)
-        </button>
-        <button class="btn btn-icon-only" id="btnThemeToggle" title="Toggle Dark/Light Mode">
-          <svg id="themeIconSun" width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 3v1m0 16v1m9-9h-1M4 12H3m15.364 6.364l-.707-.707M6.343 6.343l-.707-.707m12.728 0l-.707.707M6.343 17.657l-.707.707M16 12a4 4 0 11-8 0 4 4 0 018 0z"/></svg>
-        </button>
+      <div class="card pane" id="paneOut">
+        <div class="pane-head">
+          <div class="pane-title">Humanized <span class="chip" id="chipOut">—</span></div>
+          <div class="tabs" role="tablist">
+            <button role="tab" aria-selected="true" id="tabResult">Result</button>
+            <button role="tab" aria-selected="false" id="tabDiff">Changes</button>
+          </div>
+          <div class="spacer"></div>
+          <button class="btn sm ghost" id="btnReuse" title="Move the result into the input to refine it again" disabled>↺ Refine</button>
+          <button class="btn sm ghost" id="btnCopy" disabled>Copy</button>
+          <div class="menu">
+            <button class="btn sm" id="btnExport" disabled>Save ▾</button>
+            <div class="menu-list" id="exportMenu">
+              <button data-fmt="docx">Word document (.docx)</button>
+              <button data-fmt="txt">Plain text (.txt)</button>
+              <button data-fmt="md">Markdown (.md)</button>
+            </div>
+          </div>
+        </div>
+        <div class="pane-body">
+          <textarea class="editor" id="txtOut" spellcheck="true" placeholder=""></textarea>
+          <div class="view" id="diffView" tabindex="0" aria-label="Changes"></div>
+          <div class="empty" id="outEmpty"><div><b>Your rewrite appears here</b>Facts, numbers, citations and formatting are kept exactly.<br>Press <span class="kbd">Ctrl ↵</span> to start.</div></div>
+        </div>
+        <div class="pane-foot"><span id="statsOut">0 words</span><span class="spacer"></span><span id="metaOut"></span></div>
       </div>
-    </header>
+    </div>
+  </section>
 
-    <!-- Real-Time Telemetry Radar HUD -->
-    <div class="radar-hud">
-      <div class="gauge-card">
-        <div class="radial-dial-wrap">
-          <svg class="radial-svg" viewBox="0 0 150 150">
-            <circle class="radial-bg" cx="75" cy="75" r="65"></circle>
-            <circle class="radial-fill" id="scoreDialCircle" cx="75" cy="75" r="65"></circle>
+  <aside class="side">
+    <div class="card sec">
+      <h3>AI-likelihood <span class="muted" id="confTag"></span></h3>
+      <div class="gauge">
+        <div class="ring">
+          <svg width="112" height="112" viewBox="0 0 112 112" aria-hidden="true">
+            <circle class="track" cx="56" cy="56" r="47" fill="none" stroke-width="10"/>
+            <circle class="val" id="ringVal" cx="56" cy="56" r="47" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="295.3" stroke-dashoffset="295.3" stroke="var(--text-3)"/>
           </svg>
-          <div class="dial-center-content">
-            <span class="dial-score-num" id="scoreValue">—</span>
-            <span class="dial-score-pct">% AI</span>
-          </div>
+          <div class="num"><div><b id="ringNum">—</b><small>AI score</small></div></div>
         </div>
-        <div class="dial-label" id="scoreVerdict">Ready to Analyze</div>
-      </div>
-
-      <div class="metrics-grid">
-        <div class="metric-tile">
-          <span class="metric-title">Burstiness (CV) <span>Rhythm</span></span>
-          <span class="metric-value" id="valBurstiness">—</span>
-          <span class="metric-sub" id="subBurstiness">Target &gt; 45.0</span>
-        </div>
-        <div class="metric-tile">
-          <span class="metric-title">Perplexity <span>Surprisal</span></span>
-          <span class="metric-value" id="valPerplexity">—</span>
-          <span class="metric-sub" id="subPerplexity">Token variance</span>
-        </div>
-        <div class="metric-tile">
-          <span class="metric-title">Residual Tells <span>Stylistic</span></span>
-          <span class="metric-value" id="valTells">—</span>
-          <span class="metric-sub" id="subTells">0 target</span>
-        </div>
-        <div class="metric-tile">
-          <span class="metric-title">Lexical Diversity <span>TTR</span></span>
-          <span class="metric-value" id="valTTR">—</span>
-          <span class="metric-sub" id="subTTR">Unique word ratio</span>
-        </div>
-        <div class="metric-tile">
-          <span class="metric-title">Reading Ease <span>Flesch</span></span>
-          <span class="metric-value" id="valFlesch">—</span>
-          <span class="metric-sub" id="subFlesch">Readability score</span>
-        </div>
-        <div class="metric-tile">
-          <span class="metric-title">Total Words <span>Volume</span></span>
-          <span class="metric-value" id="valWords">0</span>
-          <span class="metric-sub" id="valParagraphs">0 paragraphs</span>
+        <div>
+          <div class="verdict" id="verdict">Paste text to analyze</div>
+          <div class="sub" id="verdictSub">Scored locally — nothing leaves your machine.</div>
+          <div class="compare" id="compare" hidden><span id="cmpBefore">—</span><span class="arrow">→</span><b id="cmpAfter">—</b><span class="delta" id="cmpDelta"></span></div>
         </div>
       </div>
+      <div class="sig" id="signals"></div>
     </div>
 
-    <!-- Control Action Bar -->
-    <div class="action-bar">
-      <div class="control-group">
-        <button class="btn btn-hero" id="btnHumanize">
-          <svg width="18" height="18" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/></svg>
-          Humanize Now
-        </button>
-        <button class="btn btn-secondary" id="btnScore">
-          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
-          Check AI Score
-        </button>
-
-        <div class="select-wrap">
-          <select class="select-custom" id="selRegister">
-            <option value="scientific" selected>Academic & Journal Scientific (Formal)</option>
-            <option value="general">Executive & Professional Business</option>
-          </select>
-          <span class="select-arrow">▼</span>
-        </div>
-
-        <div class="select-wrap">
-          <select class="select-custom" id="selStealthLevel">
-            <option value="3" selected>Level 3: Ultra Stealth + Reflexion (Best)</option>
-            <option value="2">Level 2: Statistical Roughening</option>
-            <option value="1">Level 1: Fast Single-Pass</option>
-          </select>
-          <span class="select-arrow">▼</span>
-        </div>
-      </div>
-
-      <div class="control-group">
-        <div class="view-toggles">
-          <button class="toggle-opt active" id="tabSplit">Split View</button>
-          <button class="toggle-opt" id="tabDiff">Visual Diff</button>
-        </div>
-        <button class="btn btn-secondary" id="btnExportDocx" title="Download formatted DOCX with runs preserved">
-          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-          Export DOCX
-        </button>
-        <button class="btn btn-secondary" id="btnAuditReport" title="Generate Audit Certificate">
-          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/></svg>
-          Audit Certificate
-        </button>
-      </div>
+    <div class="card sec">
+      <h3>AI patterns found <span class="chip" id="tellCount">0</span></h3>
+      <ul class="tells" id="tellList"><li class="muted" style="cursor:default;background:none;border:0;padding:0">No patterns yet.</li></ul>
     </div>
 
-    <!-- Live Progress Bar -->
-    <div class="progress-strip" id="progressStrip">
-      <div class="progress-meta">
-        <div class="progress-msg">
-          <span class="pulse-dot"></span>
-          <span id="progressMsg">Humanizing paragraph 1 of 4...</span>
-        </div>
-        <span id="progressPctText" style="font-family: var(--font-mono); font-weight: 700;">0.0%</span>
-      </div>
-      <div class="progress-track">
-        <div class="progress-bar-fill" id="progressBarFill"></div>
-      </div>
+    <div class="card sec" id="integrityCard" hidden>
+      <h3>Integrity check</h3>
+      <ul class="checks" id="checks"></ul>
     </div>
 
-    <!-- Studio Dual Workspaces -->
-    <div class="studio-panes" id="studioPanes">
-      <!-- Left Pane: Source Input -->
-      <div class="editor-pane" id="paneIn">
-        <div class="pane-header">
-          <div class="pane-title">
-            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
-            Original Document
-          </div>
-          <div class="pane-stats" id="statsIn">0 words | 0 chars</div>
-        </div>
-        <div class="editor-body">
-          <textarea class="editor-textarea" id="txtIn" placeholder="Paste academic manuscript, essay, or scientific text here, or drag & drop a .docx/.pdf/.txt file..."></textarea>
-          <div class="drop-overlay" id="dropOverlay">
-            <div class="drop-icon">📄</div>
-            <div style="font-weight: 700; font-size: 16px;">Drop Document Here</div>
-            <div style="font-size: 12px; color: var(--text-dim);">Preserves DOCX styles, citations, drawings, & math</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Right Pane: Output / Diff -->
-      <div class="editor-pane" id="paneOut">
-        <div class="pane-header">
-          <div class="pane-title">
-            <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
-            Humanized Document
-          </div>
-          <div style="display: flex; align-items: center; gap: 8px;">
-            <div class="pane-stats" id="statsOut">0 words</div>
-            <button class="btn btn-secondary" id="btnCopy" style="padding: 4px 10px; font-size: 11px;">Copy</button>
-          </div>
-        </div>
-        <div class="editor-body">
-          <textarea class="editor-textarea" id="txtOut" placeholder="Your verified humanized prose with preserved citations, mathematical notation, and high burstiness will appear here..."></textarea>
-          <div class="diff-container" id="diffView"></div>
-        </div>
+    <div class="card sec">
+      <h3>Readability</h3>
+      <div class="stat-grid">
+        <div class="stat"><b id="stFlesch">—</b><span>Flesch ease</span></div>
+        <div class="stat"><b id="stGrade">—</b><span>Grade level</span></div>
+        <div class="stat"><b id="stAvg">—</b><span>Avg sentence</span></div>
+        <div class="stat"><b id="stDiv">—</b><span>Word variety</span></div>
       </div>
     </div>
+  </aside>
+</main>
+<div class="foot"><span>Humanizer Pro <span id="ver"></span></span><span>Scores are a local estimate, not a guarantee of any third-party detector's result.</span><span><span class="kbd">Ctrl ↵</span> humanize · <span class="kbd">Esc</span> cancel · <span class="kbd">Ctrl ⇧ C</span> copy result</span></div>
+
+<div class="modal" id="provModal" role="dialog" aria-modal="true" aria-labelledby="provTitle">
+  <div class="card modal-card">
+    <div class="modal-head"><h2 id="provTitle">LLM providers</h2><div class="spacer"></div>
+      <button class="btn sm" id="btnResetCd">Reset cooldowns</button><button class="btn sm" id="btnRefreshProv">Refresh</button><button class="icon-btn" id="btnCloseProv" aria-label="Close">✕</button></div>
+    <p class="muted" id="provNote" style="margin-top:0"></p>
+    <table><thead><tr><th>Provider</th><th>Model</th><th>Status</th></tr></thead><tbody id="provBody"></tbody></table>
   </div>
+</div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
 
-  <!-- Providers Modal -->
-  <div class="modal-backdrop" id="providersModal">
-    <div class="modal-box">
-      <div class="modal-header">
-        <h2>Active LLM Provider Pool</h2>
-        <button class="btn btn-icon-only" id="btnCloseModal">✕</button>
-      </div>
-      <p style="font-size: 13px; color: var(--text-muted);">
-        Humanizer Pro automatically balances requests across 14 multi-cloud endpoints with persistent rate-limiting, failure mitigation, and cooldown recovery.
-      </p>
-      <div style="display: flex; gap: 10px;">
-        <button class="btn btn-secondary" id="btnResetCooldowns" style="font-size: 12px;">Reset All Cooldowns</button>
-        <button class="btn btn-secondary" id="btnRefreshProviders" style="font-size: 12px;">Refresh Status</button>
-      </div>
-      <div style="max-height: 380px; overflow-y: auto;">
-        <table class="provider-table">
-          <thead>
-            <tr>
-              <th>Provider</th>
-              <th>Model</th>
-              <th>Status</th>
-              <th>Throttle / Cooldown</th>
-            </tr>
-          </thead>
-          <tbody id="providerTableBody">
-            <!-- Populated via JS -->
-          </tbody>
-        </table>
-      </div>
-    </div>
-  </div>
+<script>
+(() => {
+  const $ = (id) => document.getElementById(id);
+  const store = {
+    get(k, d) { try { const v = localStorage.getItem('hp.' + k); return v === null ? d : JSON.parse(v); } catch { return d; } },
+    set(k, v) { try { localStorage.setItem('hp.' + k, JSON.stringify(v)); } catch {} },
+  };
+  const state = {
+    register: store.get('register', 'academic'), level: store.get('level', '3'), engine: store.get('engine', 'auto'),
+    sessionDocx: null, fileName: null, jobId: null, polling: null, lastResult: null, inputAnalysis: null, health: null,
+  };
 
-  <!-- Toast Tray -->
-  <div class="toast-tray" id="toastTray"></div>
+  // ---------- helpers ----------
+  const esc = (s) => s.replace(/[&<>"']/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+  const wc = (s) => (s.trim().match(/\S+/g) || []).length;
+  function toast(msg, err = false) {
+    const t = document.createElement('div'); t.className = 'toast' + (err ? ' err' : ''); t.textContent = msg;
+    $('toasts').appendChild(t); setTimeout(() => t.remove(), err ? 6000 : 2800);
+  }
+  async function api(path, opts = {}) {
+    const res = await fetch(path, { headers: opts.body && !(opts.body instanceof FormData) ? {'Content-Type': 'application/json'} : {}, ...opts });
+    const ct = res.headers.get('content-type') || '';
+    const data = ct.includes('json') ? await res.json() : null;
+    if (!res.ok) throw new Error((data && (data.detail?.[0]?.msg || data.detail)) || res.statusText);
+    return data;
+  }
+  const tone = (s) => s == null ? '' : s < 20 ? 'good' : s < 50 ? 'warn' : 'bad';
+  const colorFor = (s) => s == null ? 'var(--text-3)' : s < 20 ? 'var(--good)' : s < 50 ? 'var(--warn)' : 'var(--bad)';
+  function setChip(el, score) { el.className = 'chip ' + tone(score); el.textContent = score == null ? '—' : `${Math.round(score)}% AI`; }
 
-  <script>
-    // State
-    let currentUploadedDocx = null;
-    let initialScore = 0.0;
-    let lastMetrics = null;
+  // ---------- theme ----------
+  const root = document.documentElement;
+  const savedTheme = store.get('theme', null); if (savedTheme) root.dataset.theme = savedTheme;
+  $('btnTheme').onclick = () => {
+    const dark = root.dataset.theme ? root.dataset.theme === 'dark' : matchMedia('(prefers-color-scheme: dark)').matches;
+    root.dataset.theme = dark ? 'light' : 'dark'; store.set('theme', root.dataset.theme);
+  };
 
-    // Elements
-    const txtIn = document.getElementById('txtIn');
-    const txtOut = document.getElementById('txtOut');
-    const diffView = document.getElementById('diffView');
-    const btnHumanize = document.getElementById('btnHumanize');
-    const btnScore = document.getElementById('btnScore');
-    const btnCopy = document.getElementById('btnCopy');
-    const btnUpload = document.getElementById('btnUpload');
-    const fileInput = document.getElementById('fileInput');
-    const btnExportDocx = document.getElementById('btnExportDocx');
-    const btnAuditReport = document.getElementById('btnAuditReport');
-    const btnThemeToggle = document.getElementById('btnThemeToggle');
-    const btnProviders = document.getElementById('btnProviders');
-    const providersModal = document.getElementById('providersModal');
-    const btnCloseModal = document.getElementById('btnCloseModal');
-    const btnResetCooldowns = document.getElementById('btnResetCooldowns');
-    const btnRefreshProviders = document.getElementById('btnRefreshProviders');
-    const selRegister = document.getElementById('selRegister');
-    const selStealthLevel = document.getElementById('selStealthLevel');
+  // ---------- segmented controls ----------
+  function bindSeg(id, key) {
+    const seg = $(id);
+    const sync = () => seg.querySelectorAll('button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.v === state[key])));
+    seg.addEventListener('click', (e) => { const b = e.target.closest('button'); if (!b) return; state[key] = b.dataset.v; store.set(key, state[key]); sync(); });
+    sync();
+  }
+  bindSeg('segRegister', 'register'); bindSeg('segLevel', 'level'); bindSeg('segEngine', 'engine');
 
-    const progressStrip = document.getElementById('progressStrip');
-    const progressMsg = document.getElementById('progressMsg');
-    const progressBarFill = document.getElementById('progressBarFill');
-    const progressPctText = document.getElementById('progressPctText');
+  // ---------- health & providers ----------
+  async function loadHealth() {
+    try {
+      const h = await api('/api/health'); state.health = h; $('ver').textContent = 'v' + h.version;
+      if (h.llm_configured) { $('engineDot').className = 'dot ' + (h.llm_ready ? 'ok' : 'warn'); $('engineText').textContent = h.llm_ready ? `AI rewrite · ${h.llm_ready} ready` : 'AI rewrite · cooling down'; }
+      else { $('engineDot').className = 'dot warn'; $('engineText').textContent = 'Offline rule engine'; }
+    } catch { $('engineText').textContent = 'Server offline'; }
+  }
+  async function loadProviders() {
+    const body = $('provBody'); body.innerHTML = '<tr><td colspan="3" class="muted">Loading…</td></tr>';
+    try {
+      const list = await api('/api/providers');
+      $('provNote').innerHTML = list.length ? 'Requests rotate across ready endpoints and fail over automatically.'
+        : 'No API keys found. The offline rule engine is used. Add a key such as <code>GROQ_API_KEY</code>, <code>GEMINI_API_KEY</code> or <code>OPENROUTER_API_KEY</code> to a <code>.env</code> file and restart (see PROVIDERS.md).';
+      body.innerHTML = list.map((p) => {
+        const st = p.status === 'ready' ? '<span class="chip good">ready</span>' : p.status === 'throttled' ? '<span class="chip warn">pacing</span>'
+          : `<span class="chip bad" title="${esc(p.last_error || '')}">cooling ${Math.ceil(p.cooldown_remaining_sec)}s</span>`;
+        return `<tr><td>${esc(p.name)}</td><td><code>${esc(p.model)}</code></td><td>${st}</td></tr>`;
+      }).join('') || '<tr><td colspan="3" class="muted">No providers configured.</td></tr>';
+    } catch (e) { body.innerHTML = `<tr><td colspan="3">${esc(e.message)}</td></tr>`; }
+  }
+  $('enginePill').onclick = () => { $('provModal').classList.add('on'); loadProviders(); };
+  $('btnCloseProv').onclick = () => $('provModal').classList.remove('on');
+  $('provModal').onclick = (e) => { if (e.target === $('provModal')) $('provModal').classList.remove('on'); };
+  $('btnRefreshProv').onclick = () => { loadProviders(); loadHealth(); };
+  $('btnResetCd').onclick = async () => { await api('/api/reset-cooldowns', {method: 'POST'}); toast('Cooldowns cleared'); loadProviders(); loadHealth(); };
 
-    const scoreValue = document.getElementById('scoreValue');
-    const scoreVerdict = document.getElementById('scoreVerdict');
-    const scoreDialCircle = document.getElementById('scoreDialCircle');
+  // ---------- input & analysis ----------
+  const txtIn = $('txtIn'), txtOut = $('txtOut');
+  txtIn.value = store.get('draft', '');
+  let analyzeTimer = null, analyzeSeq = 0;
+  function updateInStats() { const t = txtIn.value; $('statsIn').textContent = `${wc(t).toLocaleString()} words · ${t.length.toLocaleString()} chars`; }
+  function scheduleAnalyze() {
+    clearTimeout(analyzeTimer);
+    analyzeTimer = setTimeout(async () => {
+      const text = txtIn.value; const seq = ++analyzeSeq;
+      if (!text.trim()) { state.inputAnalysis = null; renderAnalysis(null); setChip($('chipIn'), null); return; }
+      try { const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text})}); if (seq !== analyzeSeq) return;
+        state.inputAnalysis = a; setChip($('chipIn'), a.words >= 8 ? a.ai_score : null);
+        if (!state.lastResult) renderAnalysis(a, null); renderTells(a); if ($('tabMarks').getAttribute('aria-selected') === 'true') renderMarks();
+      } catch (e) { /* ignore transient errors while typing */ }
+    }, 450);
+  }
+  txtIn.addEventListener('input', () => { updateInStats(); store.set('draft', txtIn.value.slice(0, 200000)); if (state.sessionDocx) { state.sessionDocx = null; $('fileTag').textContent = ''; } scheduleAnalyze(); });
 
-    const valBurstiness = document.getElementById('valBurstiness');
-    const valPerplexity = document.getElementById('valPerplexity');
-    const valTells = document.getElementById('valTells');
-    const valTTR = document.getElementById('valTTR');
-    const valFlesch = document.getElementById('valFlesch');
-    const valWords = document.getElementById('valWords');
-    const valParagraphs = document.getElementById('valParagraphs');
-    const statsIn = document.getElementById('statsIn');
-    const statsOut = document.getElementById('statsOut');
-
-    const tabSplit = document.getElementById('tabSplit');
-    const tabDiff = document.getElementById('tabDiff');
-    const dropOverlay = document.getElementById('dropOverlay');
-
-    // Theme Management
-    function initTheme() {
-      const saved = localStorage.getItem('humanizer_theme') || 'dark';
-      document.documentElement.setAttribute('data-theme', saved);
+  function renderAnalysis(a, before) {
+    const ring = $('ringVal'), C = 295.3;
+    if (!a || a.words < 8) {
+      ring.style.strokeDashoffset = C; ring.setAttribute('stroke', 'var(--text-3)'); $('ringNum').textContent = '—';
+      $('verdict').textContent = a ? 'Too short to judge' : 'Paste text to analyze'; $('verdictSub').textContent = 'Scored locally — nothing leaves your machine.';
+      $('signals').innerHTML = ''; $('confTag').textContent = ''; $('compare').hidden = true; setRead(null); return;
     }
-    btnThemeToggle.addEventListener('click', () => {
-      const cur = document.documentElement.getAttribute('data-theme');
-      const next = cur === 'dark' ? 'light' : 'dark';
-      document.documentElement.setAttribute('data-theme', next);
-      localStorage.setItem('humanizer_theme', next);
-    });
-    initTheme();
+    ring.style.strokeDashoffset = C * (1 - a.ai_score / 100); ring.setAttribute('stroke', colorFor(a.ai_score));
+    $('ringNum').textContent = Math.round(a.ai_score) + '%';
+    $('verdict').textContent = a.verdict; $('verdictSub').textContent = before != null ? 'Humanized result' : 'Original text';
+    $('confTag').textContent = a.confidence ? a.confidence + ' confidence' : '';
+    if (before != null) { $('compare').hidden = false; $('cmpBefore').textContent = Math.round(before) + '%'; $('cmpAfter').textContent = Math.round(a.ai_score) + '%';
+      const d = before - a.ai_score; $('cmpDelta').textContent = d > 0 ? `↓ ${Math.round(d)} pts` : ''; } else $('compare').hidden = true;
+    $('signals').innerHTML = (a.signals || []).map((s) => `<div class="sig-row" title="${esc(s.hint)}"><span class="lbl">${esc(s.label)}</span><span class="pct">${s.ai}%</span>
+      <div class="bar"><i style="width:${s.ai}%;background:${colorFor(s.ai)}"></i></div><span class="hint">${esc(s.hint)}</span></div>`).join('');
+    setRead(a);
+  }
+  function setRead(a) {
+    const r = a && a.readability;
+    $('stFlesch').textContent = r && r.flesch != null ? r.flesch : '—'; $('stGrade').textContent = r && r.grade != null ? r.grade : '—';
+    $('stAvg').textContent = r ? r.avg_sentence_len + 'w' : '—'; $('stDiv').textContent = a && a.ttr != null ? Math.round(a.ttr * 100) + '%' : '—';
+  }
+  function renderTells(a) {
+    const list = $('tellList'); const tells = (a && a.tells) || [];
+    $('tellCount').textContent = tells.length; $('tellCount').className = 'chip ' + (tells.length ? (tells.length > 5 ? 'bad' : 'warn') : 'good');
+    if (!tells.length) { list.innerHTML = `<li class="muted" style="cursor:default;background:none;border:0;padding:0">${a && a.words >= 8 ? 'None found — nice.' : 'No patterns yet.'}</li>`; return; }
+    list.innerHTML = tells.slice(0, 80).map((t, i) => `<li data-i="${i}" title="${esc(t.label)}"><div><span class="w">“${esc(t.text.trim() || '—')}”</span><br><span class="s">→ ${esc(t.suggestion)}</span></div><span class="c">${esc(t.label)}</span></li>`).join('');
+  }
+  $('tellList').addEventListener('click', (e) => {
+    const li = e.target.closest('li[data-i]'); if (!li) return; showTab('marks');
+    const m = $('marksView').querySelector(`mark[data-i="${li.dataset.i}"]`); if (m) { m.scrollIntoView({block: 'center', behavior: 'smooth'}); m.classList.remove('flash'); void m.offsetWidth; m.classList.add('flash'); }
+  });
 
-    // Toast
-    function showToast(msg, icon = '✓') {
-      const tray = document.getElementById('toastTray');
-      const t = document.createElement('div');
-      t.className = 'toast';
-      t.innerHTML = `<span>${icon}</span> <span>${msg}</span>`;
-      tray.appendChild(t);
-      setTimeout(() => {
-        t.style.opacity = '0';
-        setTimeout(() => t.remove(), 300);
-      }, 3500);
+  function renderMarks() {
+    const a = state.inputAnalysis, text = txtIn.value; const view = $('marksView');
+    if (!a || !text) { view.innerHTML = '<span class="muted">Nothing to highlight yet.</span>'; return; }
+    const tells = a.tells || []; const hot = (a.sentence_scores || []).filter((s) => s.score >= 60);
+    const bounds = new Set([0, text.length]); tells.forEach((t) => { bounds.add(t.start); bounds.add(t.end); }); hot.forEach((s) => { bounds.add(s.start); bounds.add(s.end); });
+    const pts = [...bounds].filter((x) => x >= 0 && x <= text.length).sort((x, y) => x - y); let html = '';
+    for (let k = 0; k < pts.length - 1; k++) {
+      const s = pts[k], e = pts[k + 1]; let seg = esc(text.slice(s, e));
+      const ti = tells.findIndex((t) => t.start <= s && t.end >= e); const inHot = hot.find((h) => h.start <= s && h.end >= e);
+      if (ti >= 0) seg = `<mark class="t" data-i="${ti}" title="${esc(tells[ti].label + ' → ' + tells[ti].suggestion)}">${seg}</mark>`;
+      if (inHot) seg = `<span class="s-hot" title="Reads machine-like: ${esc(inHot.reasons.join(', ') || 'uniform rhythm')}">${seg}</span>`;
+      html += seg;
     }
+    view.innerHTML = html;
+  }
 
-    // Dial Animation
-    function updateScoreDial(score) {
-      const circumference = 408;
-      const offset = circumference - (score / 100) * circumference;
-      scoreDialCircle.style.strokeDashoffset = offset;
-      scoreValue.textContent = score.toFixed(1);
+  // ---------- tabs ----------
+  function showTab(which) {
+    const marks = which === 'marks'; $('tabEdit').setAttribute('aria-selected', String(!marks)); $('tabMarks').setAttribute('aria-selected', String(marks));
+    txtIn.classList.toggle('off', marks); $('marksView').classList.toggle('on', marks); if (marks) renderMarks();
+  }
+  $('tabEdit').onclick = () => { showTab('edit'); txtIn.focus(); }; $('tabMarks').onclick = () => showTab('marks');
+  $('marksView').addEventListener('dblclick', () => { showTab('edit'); txtIn.focus(); });
+  function showOutTab(which) {
+    const diff = which === 'diff'; $('tabResult').setAttribute('aria-selected', String(!diff)); $('tabDiff').setAttribute('aria-selected', String(diff));
+    txtOut.classList.toggle('off', diff); $('diffView').classList.toggle('on', diff); if (diff) renderDiff();
+  }
+  $('tabResult').onclick = () => showOutTab('result'); $('tabDiff').onclick = () => showOutTab('diff');
 
-      let color = '#10B981';
-      let verdict = '100% Human Passing — Verified Safe';
-      if (score > 20.0) {
-        color = '#F43F5E';
-        verdict = 'AI Detected — High Tell Density';
-      } else if (score > 5.0) {
-        color = '#F59E0B';
-        verdict = 'Moderate Human / Needs Refinement';
-      }
-
-      scoreDialCircle.style.stroke = color;
-      scoreVerdict.textContent = verdict;
-      scoreVerdict.style.color = color;
+  // ---------- diff (word-level LCS, chunked for long texts) ----------
+  function diffWords(a, b) {
+    const A = a.split(/(\s+)/), B = b.split(/(\s+)/), n = A.length, m = B.length;
+    if (n * m > 4e6) return null;
+    const dp = Array.from({length: n + 1}, () => new Uint32Array(m + 1));
+    for (let i = n - 1; i >= 0; i--) for (let j = m - 1; j >= 0; j--) dp[i][j] = A[i] === B[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1]);
+    const out = []; let i = 0, j = 0;
+    while (i < n && j < m) { if (A[i] === B[j]) { out.push(['=', A[i]]); i++; j++; } else if (dp[i + 1][j] >= dp[i][j + 1]) out.push(['-', A[i++]]); else out.push(['+', B[j++]]); }
+    while (i < n) out.push(['-', A[i++]]); while (j < m) out.push(['+', B[j++]]); return out;
+  }
+  function renderDiff() {
+    const src = state.lastResult ? state.lastResult.source : txtIn.value, out = txtOut.value; const view = $('diffView');
+    if (!out) { view.innerHTML = '<span class="muted">No result yet.</span>'; return; }
+    const pa = src.split(/\n\s*\n/), pb = out.split(/\n\s*\n/); const parts = [];
+    const pairs = pa.length === pb.length ? pa.map((x, k) => [x, pb[k]]) : [[src, out]];
+    for (const [x, y] of pairs) {
+      const d = diffWords(x, y);
+      if (!d) { parts.push(`<del>${esc(x)}</del>\n<ins>${esc(y)}</ins>`); continue; }
+      parts.push(d.map(([op, t]) => op === '=' ? esc(t) : /^\s+$/.test(t) ? esc(t) : op === '+' ? `<ins>${esc(t)}</ins>` : `<del>${esc(t)}</del>`).join(''));
     }
+    view.innerHTML = parts.join('\n\n');
+  }
 
-    // Stats Calculation
-    function updateEditorStats() {
-      const tIn = txtIn.value.trim();
-      const wordsIn = tIn ? tIn.split(/\s+/).length : 0;
-      const charsIn = txtIn.value.length;
-      statsIn.textContent = `${wordsIn.toLocaleString()} words | ${charsIn.toLocaleString()} chars`;
+  // ---------- humanize ----------
+  function setBusy(on) {
+    $('btnRun').disabled = on; $('btnCancel').hidden = !on; $('progress').classList.toggle('on', on);
+    if (on) { $('progBar').classList.add('indet'); $('progBar').firstElementChild.style.width = ''; $('progPct').textContent = ''; $('progMsg').textContent = 'Starting…'; }
+  }
+  async function run() {
+    const text = txtIn.value;
+    if (!text.trim() && !state.sessionDocx) { toast('Paste some text or open a file first.', true); txtIn.focus(); return; }
+    if (state.jobId) return;
+    setBusy(true);
+    try {
+      const body = { text, scientific: state.register === 'academic', stealth_level: Number(state.level), target_pct: 10, use_gemini: state.engine !== 'offline', session_docx: state.sessionDocx };
+      const { job_id } = await api('/api/jobs', {method: 'POST', body: JSON.stringify(body)});
+      state.jobId = job_id; poll();
+    } catch (e) { setBusy(false); toast(e.message, true); }
+  }
+  async function poll() {
+    if (!state.jobId) return;
+    try {
+      const j = await api('/api/jobs/' + state.jobId);
+      $('progMsg').textContent = j.message || '';
+      if (j.progress > 0) { $('progBar').classList.remove('indet'); $('progBar').firstElementChild.style.width = j.progress + '%'; $('progPct').textContent = Math.round(j.progress) + '%'; }
+      if (j.status === 'done' || j.status === 'cancelled') { state.jobId = null; setBusy(false); showResult(j.result, text0()); if (j.status === 'cancelled') toast('Cancelled — partial result kept.'); return; }
+      if (j.status === 'error') { state.jobId = null; setBusy(false); toast('Failed: ' + j.error, true); return; }
+      state.polling = setTimeout(poll, 600);
+    } catch (e) { state.jobId = null; setBusy(false); toast(e.message, true); }
+  }
+  const text0 = () => txtIn.value;
+  async function showResult(r, source) {
+    if (!r) return;
+    state.lastResult = { ...r, source };
+    txtOut.value = r.output; $('outEmpty').style.display = 'none';
+    ['btnCopy', 'btnExport', 'btnReuse'].forEach((id) => $(id).disabled = false);
+    $('statsOut').textContent = `${wc(r.output).toLocaleString()} words`;
+    $('metaOut').textContent = `${({llm: 'AI rewrite', mixed: 'AI rewrite + offline fallback', rules: 'Offline rules'})[r.engine] || r.engine} · ${r.duration}s`;
+    setChip($('chipOut'), r.final_score);
+    try { const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text: r.output})}); renderAnalysis(a, r.initial_score); renderTells(a); }
+    catch { renderAnalysis({...r.after, readability: null}, r.initial_score); }
+    const checks = r.integrity || []; const errs = checks.filter((c) => c.severity === 'error');
+    $('integrityCard').hidden = false;
+    $('checks').innerHTML = (errs.length ? '' : '<li><span class="ic ok-ic">✓</span><span>Numbers, citations and links preserved</span></li>')
+      + checks.slice(0, 8).map((c) => `<li><span class="ic ${c.severity === 'error' ? 'err-ic' : 'warn-ic'}">${c.severity === 'error' ? '!' : 'i'}</span><span>${esc(c.message)}</span></li>`).join('');
+    if ($('tabDiff').getAttribute('aria-selected') === 'true') renderDiff();
+    if (r.engine === 'rules' && state.engine !== 'offline' && state.health && !state.health.llm_configured) toast('Used the offline engine. Add an API key for deeper AI rewrites.');
+  }
+  $('btnRun').onclick = run;
+  $('btnCancel').onclick = async () => { if (!state.jobId) return; $('progMsg').textContent = 'Cancelling…'; try { await api(`/api/jobs/${state.jobId}/cancel`, {method: 'POST'}); } catch {} };
+  txtOut.addEventListener('input', () => { $('statsOut').textContent = `${wc(txtOut.value).toLocaleString()} words`; });
 
-      const tOut = txtOut.value.trim();
-      const wordsOut = tOut ? tOut.split(/\s+/).length : 0;
-      statsOut.textContent = `${wordsOut.toLocaleString()} words`;
-
-      valWords.textContent = (wordsOut || wordsIn).toLocaleString();
-      const paras = (tOut || tIn).split(/\n\n+/).filter(p => p.trim()).length;
-      valParagraphs.textContent = `${paras} paragraphs`;
-    }
-
-    txtIn.addEventListener('input', updateEditorStats);
-    txtOut.addEventListener('input', updateEditorStats);
-
-    // AI Detection Scoring
-    async function analyzeScore(textToScore) {
-      const text = textToScore || txtOut.value.trim() || txtIn.value.trim();
-      if (!text) {
-        showToast('Please enter or paste text to score', '⚠️');
-        return;
-      }
+  // ---------- output actions ----------
+  $('btnCopy').onclick = async () => { try { await navigator.clipboard.writeText(txtOut.value); toast('Copied to clipboard'); } catch { txtOut.select(); document.execCommand('copy'); toast('Copied'); } };
+  $('btnReuse').onclick = () => { txtIn.value = txtOut.value; state.sessionDocx = null; $('fileTag').textContent = ''; updateInStats(); store.set('draft', txtIn.value); scheduleAnalyze(); toast('Result moved to input — press Humanize to refine again.'); };
+  $('btnExport').onclick = (e) => { e.stopPropagation(); $('exportMenu').classList.toggle('on'); };
+  document.addEventListener('click', () => $('exportMenu').classList.remove('on'));
+  $('exportMenu').addEventListener('click', async (e) => {
+    const b = e.target.closest('button'); if (!b) return; const fmt = b.dataset.fmt; const base = (state.fileName || 'humanized').replace(/\.[^.]+$/, '') + (state.fileName ? '_humanized' : '');
+    if (fmt === 'docx') {
       try {
-        const res = await fetch('/api/score', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text })
-        });
-        const data = await res.json();
-        lastMetrics = data;
-        updateScoreDial(data.ai_score);
-        valBurstiness.textContent = data.burstiness?.toFixed(1) || '—';
-        valPerplexity.textContent = data.perplexity?.toFixed(1) || '—';
-        valTells.textContent = data.ai_tells ?? '0';
-        valTTR.textContent = data.ttr?.toFixed(2) || '—';
-        valFlesch.textContent = data.flesch != null ? data.flesch.toFixed(1) : '—';
-        showToast(`AI Score: ${data.ai_score.toFixed(1)}% analyzed`);
-      } catch (err) {
-        showToast('Scoring error: ' + err.message, '⚠️');
-      }
-    }
+        const res = await fetch('/api/download-docx', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: txtOut.value, session_docx: state.sessionDocx})});
+        if (!res.ok) throw new Error('Export failed'); save(await res.blob(), base + '.docx');
+      } catch (err) { toast(err.message, true); }
+    } else save(new Blob([txtOut.value], {type: 'text/plain;charset=utf-8'}), `${base}.${fmt}`);
+  });
+  function save(blob, name) { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 500); }
 
-    btnScore.addEventListener('click', () => analyzeScore());
+  // ---------- files ----------
+  async function openFile(file) {
+    if (!file) return; const fd = new FormData(); fd.append('file', file);
+    toast('Reading ' + file.name + '…');
+    try {
+      const r = await api('/api/upload', {method: 'POST', body: fd});
+      txtIn.value = r.text; state.sessionDocx = r.session_docx; state.fileName = r.filename;
+      $('fileTag').textContent = r.session_docx ? `📄 ${r.filename} · formatting preserved` : `📄 ${r.filename}`;
+      updateInStats(); scheduleAnalyze(); showTab('edit');
+    } catch (e) { toast(e.message, true); }
+  }
+  $('btnUpload').onclick = () => $('file').click();
+  $('file').onchange = (e) => { openFile(e.target.files[0]); e.target.value = ''; };
+  const dz = $('dropZone'); let dragDepth = 0;
+  dz.addEventListener('dragenter', (e) => { e.preventDefault(); dragDepth++; $('dropOverlay').classList.add('on'); });
+  dz.addEventListener('dragover', (e) => e.preventDefault());
+  dz.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('dropOverlay').classList.remove('on'); } });
+  dz.addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('dropOverlay').classList.remove('on'); if (e.dataTransfer.files[0]) openFile(e.dataTransfer.files[0]); });
 
-    // Humanize Processing
-    btnHumanize.addEventListener('click', async () => {
-      const text = txtIn.value.trim();
-      if (!text) {
-        showToast('Please paste or upload text to humanize', '⚠️');
-        return;
-      }
+  $('btnClear').onclick = () => { txtIn.value = ''; state.sessionDocx = null; state.fileName = null; $('fileTag').textContent = ''; store.set('draft', ''); updateInStats(); scheduleAnalyze(); txtIn.focus(); };
+  $('btnSample').onclick = () => {
+    txtIn.value = "In today's fast-paced world, artificial intelligence has emerged as a transformative force in healthcare, revolutionizing the way clinicians diagnose, treat, and manage patient care. Furthermore, it is important to note that machine learning algorithms can analyze vast amounts of medical data, thereby enabling earlier detection of diseases such as cancer.\n\nMoreover, AI-powered tools not only improve diagnostic accuracy but also reduce costs — a testament to their pivotal role in modern medicine. A 2023 study reported a 23% reduction in reading time [4]. As we navigate the complexities of this ever-evolving landscape, it is crucial that stakeholders foster collaboration, ensuring patient safety and privacy remain paramount. The future looks bright.";
+    state.sessionDocx = null; $('fileTag').textContent = ''; updateInStats(); store.set('draft', txtIn.value); scheduleAnalyze();
+  };
 
-      btnHumanize.disabled = true;
-      progressStrip.classList.add('visible');
-      progressBarFill.style.width = '0%';
-      progressPctText.textContent = '0.0%';
-      progressMsg.textContent = 'Initializing stealth humanizer engine...';
+  // ---------- keyboard ----------
+  document.addEventListener('keydown', (e) => {
+    const mod = e.ctrlKey || e.metaKey;
+    if (mod && e.key === 'Enter') { e.preventDefault(); run(); }
+    else if (e.key === 'Escape') { if ($('provModal').classList.contains('on')) $('provModal').classList.remove('on'); else if (state.jobId) $('btnCancel').click(); }
+    else if (mod && e.shiftKey && (e.key === 'C' || e.key === 'c') && txtOut.value) { e.preventDefault(); $('btnCopy').click(); }
+  });
 
-      const scientific = selRegister.value === 'scientific';
-      const stealthLevel = parseInt(selStealthLevel.value, 10);
-
-      try {
-        // First get initial score
-        const scoreInitRes = await fetch('/api/score', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ text })
-        });
-        const initData = await scoreInitRes.json();
-        initialScore = initData.ai_score;
-        updateScoreDial(initialScore);
-
-        // Execute humanization
-        const res = await fetch('/api/humanize', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: text,
-            scientific: scientific,
-            stealth_level: stealthLevel,
-            session_docx: currentUploadedDocx,
-          })
-        });
-
-        const data = await res.json();
-        if (!data.success) {
-          throw new Error(data.error || 'Humanization failed');
-        }
-
-        txtOut.value = data.output;
-        progressBarFill.style.width = '100%';
-        progressPctText.textContent = '100.0%';
-        progressMsg.textContent = 'Humanization complete. 100% verified.';
-        updateEditorStats();
-
-        // Update score with final result
-        if (data.metrics) {
-          lastMetrics = data.metrics;
-          updateScoreDial(data.final_score);
-          valBurstiness.textContent = data.metrics.burstiness?.toFixed(1) || '—';
-          valPerplexity.textContent = data.metrics.perplexity?.toFixed(1) || '—';
-          valTells.textContent = data.metrics.ai_tells ?? '0';
-          valTTR.textContent = data.metrics.ttr?.toFixed(2) || '—';
-          valFlesch.textContent = data.metrics.flesch != null ? data.metrics.flesch.toFixed(1) : '—';
-        }
-
-        // Render Diff
-        renderDiff(text, data.output);
-        showToast(`Humanized! AI Score reduced from ${initialScore.toFixed(1)}% to ${data.final_score.toFixed(1)}%`);
-
-        setTimeout(() => {
-          progressStrip.classList.remove('visible');
-        }, 3000);
-      } catch (err) {
-        showToast('Error: ' + err.message, '⚠️');
-        progressMsg.textContent = 'Error during humanization';
-      } finally {
-        btnHumanize.disabled = false;
-      }
-    });
-
-    // Visual Diff Engine (Word-level LCS)
-    function renderDiff(orig, revised) {
-      const origWords = orig.split(/(\s+)/);
-      const revWords = revised.split(/(\s+)/);
-
-      let html = '';
-      let i = 0, j = 0;
-      while (i < origWords.length || j < revWords.length) {
-        if (i < origWords.length && j < revWords.length && origWords[i] === revWords[j]) {
-          html += escapeHtml(origWords[i]);
-          i++;
-          j++;
-        } else if (j < revWords.length && (i >= origWords.length || !origWords.includes(revWords[j], i))) {
-          html += `<span class="diff-ins">${escapeHtml(revWords[j])}</span>`;
-          j++;
-        } else if (i < origWords.length) {
-          html += `<span class="diff-del">${escapeHtml(origWords[i])}</span>`;
-          i++;
-        }
-      }
-      diffView.innerHTML = html.replace(/\n\n/g, '<br><br>');
-    }
-
-    function escapeHtml(str) {
-      return str.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
-    }
-
-    // View Toggles
-    tabSplit.addEventListener('click', () => {
-      tabSplit.classList.add('active');
-      tabDiff.classList.remove('active');
-      txtOut.style.display = 'block';
-      diffView.classList.remove('active');
-    });
-
-    tabDiff.addEventListener('click', () => {
-      tabDiff.classList.add('active');
-      tabSplit.classList.remove('active');
-      txtOut.style.display = 'none';
-      diffView.classList.add('active');
-      if (txtIn.value.trim() && txtOut.value.trim()) {
-        renderDiff(txtIn.value, txtOut.value);
-      }
-    });
-
-    // Copy Button
-    btnCopy.addEventListener('click', () => {
-      const t = txtOut.value;
-      if (!t.trim()) return;
-      navigator.clipboard.writeText(t).then(() => showToast('Humanized text copied to clipboard!'));
-    });
-
-    // File Upload Handling
-    btnUpload.addEventListener('click', () => fileInput.click());
-    fileInput.addEventListener('change', async (e) => {
-      const file = e.target.files[0];
-      if (!file) return;
-      await uploadFile(file);
-    });
-
-    async function uploadFile(file) {
-      showToast(`Uploading ${file.name}...`, '⏳');
-      const formData = new FormData();
-      formData.append('file', file);
-
-      try {
-        const res = await fetch('/api/upload', {
-          method: 'POST',
-          body: formData
-        });
-        const data = await res.json();
-        if (!data.success) throw new Error(data.error);
-
-        txtIn.value = data.text;
-        currentUploadedDocx = data.session_docx || null;
-        updateEditorStats();
-        showToast(`Loaded ${file.name} (${data.words} words)`);
-        analyzeScore(data.text);
-      } catch (err) {
-        showToast('Upload error: ' + err.message, '⚠️');
-      }
-    }
-
-    // Drag and Drop
-    const paneIn = document.getElementById('paneIn');
-    ['dragenter', 'dragover'].forEach(n => {
-      paneIn.addEventListener(n, (e) => {
-        e.preventDefault();
-        dropOverlay.classList.add('active');
-      });
-    });
-    ['dragleave', 'drop'].forEach(n => {
-      paneIn.addEventListener(n, (e) => {
-        e.preventDefault();
-        dropOverlay.classList.remove('active');
-      });
-    });
-    paneIn.addEventListener('drop', (e) => {
-      const file = e.dataTransfer.files[0];
-      if (file) uploadFile(file);
-    });
-
-    // Export DOCX
-    btnExportDocx.addEventListener('click', async () => {
-      const outText = txtOut.value.trim();
-      if (!outText) {
-        showToast('No humanized text to export', '⚠️');
-        return;
-      }
-      showToast('Preparing Word DOCX download...', '⏳');
-      try {
-        const res = await fetch('/api/download-docx', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({
-            text: outText,
-            session_docx: currentUploadedDocx,
-          })
-        });
-        if (!res.ok) throw new Error('Download failed');
-        const blob = await res.blob();
-        const url = window.URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = currentUploadedDocx ? 'humanized_document.docx' : 'humanized_output.docx';
-        a.click();
-        showToast('DOCX exported with preserved styles!');
-      } catch (err) {
-        showToast('Export failed: ' + err.message, '⚠️');
-      }
-    });
-
-    // Audit Report Certificate
-    btnAuditReport.addEventListener('click', () => {
-      const outText = txtOut.value.trim();
-      if (!outText) {
-        showToast('Please humanize text first before generating an audit report', '⚠️');
-        return;
-      }
-      const score = lastMetrics?.ai_score ?? 0.0;
-      const reportWin = window.open('', '_blank');
-      reportWin.document.write(`
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>Humanizer Pro — Verification Audit Certificate</title>
-          <style>
-            body { font-family: 'Plus Jakarta Sans', sans-serif; padding: 40px; color: #0F172A; max-width: 800px; margin: auto; }
-            .cert-card { border: 2px solid #10B981; border-radius: 16px; padding: 36px; box-shadow: 0 10px 30px rgba(0,0,0,0.1); }
-            h1 { color: #059669; font-size: 26px; margin-bottom: 4px; }
-            .badge { display: inline-block; background: #ECFDF5; color: #059669; font-weight: 700; padding: 4px 12px; border-radius: 999px; margin-bottom: 24px; }
-            table { width: 100%; border-collapse: collapse; margin: 20px 0; font-size: 14px; }
-            th, td { padding: 10px 14px; border-bottom: 1px solid #E2E8F0; text-align: left; }
-            th { color: #64748B; font-weight: 600; }
-            .footer { margin-top: 30px; font-size: 12px; color: #94A3B8; text-align: center; }
-          </style>
-        </head>
-        <body>
-          <div class="cert-card">
-            <h1>HUMANIZER PRO AUDIT CERTIFICATE</h1>
-            <div class="badge">VERIFIED HUMAN ATTRIBUTION & DETECTION PASS</div>
-            <p>This certificate confirms that the accompanying manuscript has been processed through the Humanizer Pro multi-signal synthesis engine.</p>
-            <table>
-              <tr><th>Initial AI Score</th><td>${initialScore.toFixed(1)}%</td></tr>
-              <tr><th>Final AI Score</th><td style="font-weight: bold; color: #059669;">${score.toFixed(1)}% (Safe Passing)</td></tr>
-              <tr><th>Sentence Burstiness (CV)</th><td>${lastMetrics?.burstiness?.toFixed(1) || 'N/A'}</td></tr>
-              <tr><th>Token Perplexity</th><td>${lastMetrics?.perplexity?.toFixed(1) || 'N/A'}</td></tr>
-              <tr><th>Residual AI Tells</th><td>${lastMetrics?.ai_tells ?? 0} detected</td></tr>
-              <tr><th>Flesch Reading Ease</th><td>${lastMetrics?.flesch?.toFixed(1) || 'N/A'}</td></tr>
-              <tr><th>Audit Timestamp</th><td>${new Date().toUTCString()}</td></tr>
-            </table>
-            <button onclick="window.print()" style="padding: 10px 20px; background: #059669; color: white; border: none; border-radius: 8px; cursor: pointer; font-weight: 600;">Print / Save as PDF</button>
-            <div class="footer">Generated by Humanizer Pro v5.1 Academic Suite</div>
-          </div>
-        </body>
-        </html>
-      `);
-    });
-
-    // Providers Modal
-    btnProviders.addEventListener('click', async () => {
-      providersModal.classList.add('open');
-      await loadProviders();
-    });
-    btnCloseModal.addEventListener('click', () => providersModal.classList.remove('open'));
-    btnRefreshProviders.addEventListener('click', loadProviders);
-    btnResetCooldowns.addEventListener('click', async () => {
-      await fetch('/api/reset-cooldowns', { method: 'POST' });
-      showToast('All rate-limit cooldowns cleared');
-      await loadProviders();
-    });
-
-    async function loadProviders() {
-      try {
-        const res = await fetch('/api/providers');
-        const data = await res.json();
-        const tbody = document.getElementById('providerTableBody');
-        tbody.innerHTML = '';
-        document.getElementById('providerCount').textContent = data.length;
-
-        data.forEach(p => {
-          const tr = document.createElement('tr');
-          let badgeClass = 'status-ready';
-          let statusText = 'Ready';
-          if (p.status === 'cooling_down') {
-            badgeClass = 'status-cooling';
-            statusText = `Cooling (${p.cooldown_remaining_sec}s)`;
-          } else if (p.status === 'throttled') {
-            badgeClass = 'status-throttled';
-            statusText = `Throttled (${p.throttle_wait_sec}s)`;
-          }
-
-          tr.innerHTML = `
-            <td style="font-weight: 600;">${p.name}</td>
-            <td style="font-family: var(--font-mono); color: var(--text-dim);">${p.model}</td>
-            <td><span class="status-badge ${badgeClass}">● ${statusText}</span></td>
-            <td style="color: var(--text-dim);">${p.cooldown_remaining_sec > 0 ? p.cooldown_remaining_sec + 's remaining' : 'Ready'}</td>
-          `;
-          tbody.appendChild(tr);
-        });
-      } catch (err) {
-        showToast('Failed to load providers', '⚠️');
-      }
-    }
-  </script>
+  updateInStats(); loadHealth(); if (txtIn.value.trim()) scheduleAnalyze();
+  setInterval(loadHealth, 30000);
+})();
+</script>
 </body>
 </html>

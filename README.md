@@ -1,155 +1,160 @@
-# 🧠 Humanizer Pro
+# Humanizer Pro
 
 <div align="center">
 
-[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg?style=for-the-badge)](LICENSE)
-[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?style=for-the-badge&logo=python&logoColor=white)](https://github.com/Kamran5H/Humanizer)
-[![LLM Pool](https://img.shields.io/badge/LLM%20Pool-9%20Failover%20Providers-8B5CF6?style=for-the-badge)](PROVIDERS.md)
-[![Detection Scorer](https://img.shields.io/badge/Local%20AI%20Scorer-Offline%20Heuristics-10B981?style=for-the-badge)](https://github.com/Kamran5H/Humanizer)
-[![Format Support](https://img.shields.io/badge/Formats-.DOCX%20%7C%20Markdown%20%7C%20TXT-EC4899?style=for-the-badge&logo=microsoftword&logoColor=white)](https://github.com/Kamran5H/Humanizer)
+[![CI](https://github.com/Kamran5H/Humanizer/actions/workflows/ci.yml/badge.svg)](https://github.com/Kamran5H/Humanizer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+[![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
+[![Works offline](https://img.shields.io/badge/Works-offline-10B981)](#offline-and-privacy)
 
-**Enterprise-grade AI text naturalization pipeline with a 9-provider resilient failover pool, format-preserving DOCX parser, and local zero-latency AI detection scorer.**
+**Rewrite AI-sounding text into natural prose — and see exactly why it sounded like AI.**
 
-[Features](#-core-features) • [Architecture](#-failover--pipeline-architecture) • [Provider Pool](#-9-tier-resilient-llm-pool) • [Quickstart](#-quick-start) • [Configuration](#-configuration) • [License](#-license)
+[Quick start](#quick-start) · [Web studio](#web-studio) · [Command line](#command-line) · [Python API](#python-api) · [How it works](#how-it-works) · [Providers](PROVIDERS.md)
+
+<img src="docs/screenshot.png" alt="Humanizer Pro studio: original text with highlighted AI patterns, rewritten text with tracked changes, and an AI-likelihood score that dropped from 72% to 32%" width="900">
 
 </div>
 
----
+## What it does
 
-## 🌟 Executive Overview
+- **Rewrites** AI-generated drafts so they read like a person wrote them: varied sentence rhythm, plain verbs, no stock phrases.
+- **Explains** the result with a local AI-likelihood score broken into signals you can act on (rhythm, AI vocabulary, formulaic structure, uniformity) and highlights every offending phrase with a suggested fix.
+- **Never changes your facts.** Numbers, units, statistics, citations (`[3]`, `(Smith et al., 2020)`), URLs, DOIs and equations are locked before rewriting and every result is checked against the source. A rewrite that drops or alters any of them is rejected.
+- **Keeps Word formatting.** Bold, italics, colours, fonts, superscript citations, hyperlinks, Zotero/Mendeley/EndNote citation fields, footnotes and images survive. Headings and reference lists are left alone.
+- **Works with or without an API key.** With no key it uses a fast offline rule engine. Add any free key (Groq, Gemini, Cerebras, OpenRouter …) and it switches to an LLM pool with automatic failover, falling back to the offline engine whenever a provider is down.
+- **Two registers.** *Academic* keeps a formal tone and never touches domain terms (catalyst, spectrum, yield, significant, robust …). *General* allows contractions and plainer wording.
 
-**Humanizer Pro** transforms mechanical, repetitive, and formulaic AI-generated text into authentic, fluent, and naturally paced human prose. Unlike cloud-dependent wrappers that hit strict daily rate-limits or compromise confidential documents, Humanizer Pro features:
+## Quick start
 
-1. **A 9-Tier Resilient Provider Pool**: Transparently fails over across Cerebras, SambaNova, OpenRouter, GitHub Models, Together, Mistral, DeepInfra, and local Ollama instances.
-2. **Local AI-Detection Scorer**: Instantly calculates burstiness, perplexity variance, sentence rhythm divergence, and signature n-gram clusters locally without telemetry or API costs.
-3. **Format-Preserving Document Engine**: Ingests `.docx` documents and rewrites content paragraph-by-paragraph while strictly preserving headings, font hierarchies, tables, bullet points, and inline styling.
-
----
-
-## 🚀 Core Features
-
-- **🔄 Multi-Provider Auto-Failover**: Never get blocked by rate limits. If Groq or Cerebras exhausts daily token quotas (TPD/RPM), the pipeline seamlessly routes the next paragraph to SambaNova or OpenRouter with zero downtime.
-- **📊 Real-Time Detection Scoring**: Built-in evaluation harness based on perplexity variance, burstiness, syntax distribution, and vocabulary variety to verify text authenticity before export.
-- **📄 Native `.docx` Document Processing**: Full round-trip parsing (`safe_humanize_docx.py`) ensures Microsoft Word documents maintain all table formatting, citations, and layout structures.
-- **🧪 Stealth Evaluation Harness**: Automated test harness (`detector_harness.py`, `ai_checker_test.py`) capable of running batch benchmarks against synthetic AI corpora.
-- **🖥️ GUI & CLI Interfaces**: Launch an intuitive desktop interface (`humanizer_pro.py`, `run_humanizer.vbs`) or automate batch document runs via headless Python commands.
-
----
-
-## 🏗️ Failover & Pipeline Architecture
-
-```mermaid
-flowchart TD
-    A[Input: Text or .docx Document] --> B[Paragraph & Sentence Segmenter]
-    B --> C{Dynamic Provider Pool}
-    
-    subgraph Providers [Resilient Provider Router]
-        C1[1. Groq Cloud]
-        C2[2. Cerebras Llama 3.3 70B]
-        C3[3. SambaNova Llama 3.3]
-        C4[4. OpenRouter Free Tier]
-        C5[5. GitHub Models PAT]
-        C6[6. Local Ollama Fallback]
-    end
-    
-    C -->|Try Active| C1
-    C1 -.->|On Quota / Rate-Limit| C2
-    C2 -.->|Failover| C3
-    C3 -.->|Failover| C4
-    C4 -.->|Failover| C5
-    C5 -.->|Offline / Cold Fallback| C6
-    
-    Providers --> D[Naturalized Candidate Text]
-    D --> E[Local Heuristic AI Scorer]
-    E -->|Perplexity & Burstiness Check| F{Human Score >= Threshold?}
-    F -- No -->|Refine / Perturb Syntax| C
-    F -- Yes --> G[Format Rebuilder: XML / .docx / TXT]
-    G --> H[(Polished Human Output Document)]
-```
-
----
-
-## ⚡ 9-Tier Resilient LLM Pool
-
-Humanizer Pro auto-discovers configured provider keys in `.env` / `.keys.env` and manages load-balancing and cooldown periods automatically:
-
-| Priority | Provider | Flagship Model | Speed | Daily Quota |
-| :--- | :--- | :--- | :--- | :--- |
-| **#1** | **Groq** | `llama-3.3-70b-versatile` | ~300 tok/s | 100k tokens / day |
-| **#2** | **Cerebras** | `llama-3.3-70b` | ~2,000 tok/s | ~1M tokens / day |
-| **#3** | **SambaNova** | `Meta-Llama-3.3-70B` | ~400 tok/s | High free tier |
-| **#4** | **OpenRouter** | `deepseek-chat:free`, `qwen:free` | Dynamic | Free zero-credit tier |
-| **#5** | **GitHub Models** | `gpt-4o-mini`, `Llama-3.3-70B` | ~100 tok/s | Free PAT tier |
-| **#6** | **Together AI** | `Llama-3.1-70B-Turbo` | ~150 tok/s | Free starter tier |
-| **#7** | **Mistral AI** | `mistral-small-latest` | ~120 tok/s | Free tier |
-| **#8** | **DeepInfra** | `meta-llama/Llama-3.3-70B-Turbo`| ~140 tok/s | Starter balance |
-| **#9** | **Local Ollama** | `llama3.3:latest` / `qwen2.5` | Local GPU/CPU | Unlimited (Air-gapped) |
-
-*For setup instructions, see [PROVIDERS.md](PROVIDERS.md).*
-
----
-
-## 📁 Repository Structure
-
-```text
-Humanizer/
-├── humanizer_pro.py            # Primary desktop application & GUI launcher
-├── safe_humanize_docx.py       # Format-preserving Word document pipeline
-├── paraphrase_safe.py          # Core NLP rewriting & synonym perturbation logic
-├── ai_detector.py              # Heuristic AI-detection & rhythm evaluation module
-├── detector_harness.py         # Batch verification & benchmarking harness
-├── nlp_enhance.py              # Lexical burstiness & sentence variety injector
-├── PROVIDERS.md                # Multi-provider setup guide and model override docs
-├── STEALTH_NOTES.md            # In-depth research notes on syntactic stealth
-├── run_humanizer.vbs           # Windows silent launcher
-├── .gitignore                  # Virtualenv and runtime file exclusions
-└── LICENSE                     # Open-source MIT License
-```
-
----
-
-## ⚡ Quick Start
-
-### 1. Installation
 ```bash
-# Clone the repository
 git clone https://github.com/Kamran5H/Humanizer.git
 cd Humanizer
-
-# Setup virtual environment
-python -m venv .venv
-# On Windows:
-.venv\Scripts\activate
-# On Linux/macOS:
-source .venv/bin/activate
-
-# Install required dependencies
-pip install requests python-docx numpy rich
+python -m venv .venv && source .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements.txt
+python humanizer_pro.py                                 # opens the web studio in your browser
 ```
 
-### 2. Configure API Keys
-Create a `.keys.env` or `.env` file in the root directory:
-```dotenv
-# At minimum, add Cerebras or OpenRouter for free unlimited usage:
-CEREBRAS_API_KEY=csk-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-OPENROUTER_API_KEY=sk-or-v1-xxxxxxxxxxxxxxxxxxxxxxxxxxxx
-```
+Optional: copy `.env.example` to `.env` and paste in any API key for LLM-quality rewrites (see [PROVIDERS.md](PROVIDERS.md)). One free key is enough.
 
-### 3. Run Humanizer Pro
+On Windows you can double-click `run_humanizer.vbs` to start the studio silently.
+
+## Web studio
+
+`python humanizer_pro.py` (or `humanizer --web`) starts the studio at <http://127.0.0.1:8000>.
+
+| | |
+|---|---|
+| **Live analysis** | The score updates as you type. *Highlight* marks every AI pattern and machine-sounding sentence; click a pattern in the sidebar to jump to it. |
+| **Humanize** | Choose register, strength (Light / Balanced / Max) and engine (Auto / Offline), then press **Ctrl + Enter**. Progress is live and **Esc** cancels (the partial result is kept). |
+| **Changes** | Word-level diff of exactly what was rewritten. |
+| **Integrity check** | Confirms every number, citation and link from the source is still present. |
+| **Files** | Drop or open `.docx`, `.pdf`, `.txt` or `.md`. Word files are rewritten in place with their formatting and downloaded as `.docx`. |
+| **Refine** | Moves the result back into the input for another pass. |
+
+It works entirely offline (no external fonts or scripts), remembers your draft and settings, and has light and dark themes.
+
+## Command line
+
 ```bash
-# Launch the Interactive GUI
-python humanizer_pro.py
+pip install -e .                       # installs the `humanizer` command (or use: python -m humanizer.cli)
 
-# Or process a Word document from the CLI
-python safe_humanize_docx.py input.docx --output humanized.docx
+humanizer essay.docx                   # -> essay_humanized.docx, formatting preserved
+humanizer notes.md -o clean.md         # Markdown structure (headings, lists, code) preserved
+humanizer report.pdf --general         # PDF text -> report_humanized.txt, conversational register
+cat draft.txt | humanizer --stdin --local > out.txt   # offline only: nothing leaves your machine
+humanizer --analyze draft.txt          # score + list of AI patterns, no rewriting
+humanizer --text "..." --json          # machine-readable result incl. integrity report
 ```
 
----
+Useful flags: `--level 1|2|3`, `--academic` (default) / `--general`, `--local`, `--seed N` (reproducible offline output), `--workers N`, `--no-report`, `--gui`.
 
-## 📜 License
+## Python API
 
-This project is open-source and released under the [MIT License](LICENSE).  
-Copyright (c) 2024-2026 **Kamran Ashraf**.
+```python
+from humanizer import HumanizerConfig, humanize_text, humanize_docx, analyze
+
+cfg = HumanizerConfig(scientific=True, stealth_level=3)   # use_gemini=False forces offline
+print(humanize_text("Furthermore, it is important to note that ...", cfg))
+print(cfg.engine_used)                                    # "llm", "rules" or "mixed"
+
+humanize_docx("paper.docx", cfg, dst="paper_humanized.docx")
+
+report = analyze(text)            # score, verdict, signals, tells (with offsets), sentence scores
+```
+
+## How it works
+
+```mermaid
+flowchart LR
+    A[Text / DOCX / PDF / MD] --> B[Segment<br/>keep headings, lists, code,<br/>skip references]
+    B --> C[Lock numbers, citations,<br/>URLs, equations, formatting]
+    C --> D{API key?}
+    D -- yes --> E[LLM pool<br/>persona prompt, best-of-N,<br/>re-roll robotic sentences]
+    D -- no --> F[Offline rule engine]
+    E -->|fails or unfaithful| F
+    E --> G[Fidelity gate<br/>numbers, citations, tags, length, meaning]
+    F --> G
+    G --> H[Polish + grammar]
+    H --> I[Rebuild formatting] --> J[Score & integrity report]
+```
+
+**Pattern catalogue.** `humanizer/patterns.py` is the single list of AI-writing tells used by the detector, the rewriter, the linter and the LLM prompt. It combines the project's own measured tells with the categories documented in Wikipedia's [*Signs of AI writing*](https://en.wikipedia.org/wiki/Wikipedia:Signs_of_AI_writing) guide and the open-source [blader/humanizer](https://github.com/blader/humanizer) skill:
+
+| Category | Example | Fix |
+|---|---|---|
+| AI vocabulary | *delve, leverage, pivotal, tapestry, showcase* | plain word |
+| Inflated significance | *plays a crucial role in, stands as a testament to* | state the fact |
+| Copula avoidance | *serves as a, boasts* | *is, has* |
+| Formulaic transitions | *Furthermore, Moreover, Ultimately,* | drop or vary |
+| Shallow *-ing* tails | *…, highlighting the need for* | separate sentence |
+| Negative parallelism | *not only X but also Y* | *X and Y* |
+| Filler & hedging | *it is important to note that, could potentially* | delete |
+| Chatbot residue | *I hope this helps, As of my last update* | delete |
+| Em-dash overuse | *X — Y — Z* | commas |
+| Generic conclusions | *The future looks bright.* | delete |
+
+**Detector.** The local score blends sentence-length burstiness, weighted pattern density, formulaic structure and uniformity, plus GPT-2 perplexity when `torch` and `transformers` are installed. On the bundled corpus, AI samples score 84–93% and human-written samples 0–20%. It is an *estimate*: it explains what makes text read as machine-written, but it does not guarantee what any third-party detector will say.
+
+**LLM pipeline.** Each paragraph is rewritten by a rotating persona with explicit style rules. At *Balanced* and *Max*, several candidates are scored and the most natural one is kept. *Max* then re-rolls the individual sentences that still read as robotic. Every candidate must pass the fidelity gate; if none does, the paragraph falls back to the offline engine.
+
+## Offline and privacy
+
+- With no API key, or with *Offline* / `--local`, nothing leaves your machine.
+- The studio binds to `127.0.0.1`, accepts only localhost `Host` headers and sends no CORS headers, so other websites cannot use it or your keys.
+- A `GITHUB_TOKEN` already in your environment is **not** used to call GitHub Models. Set `GITHUB_MODELS_TOKEN` (or put `GITHUB_TOKEN` in your `.env`) to opt in.
+- Uploads are deleted after 24 hours. Interrupted jobs resume from a local checkpoint that is removed when the job finishes.
+
+## Project layout
+
+```text
+humanizer/
+  patterns.py   AI-writing pattern catalogue (single source of truth)
+  rules.py      offline rewriter: locking, substitutions, structure repairs, grammar
+  engine.py     LLM + offline orchestration, fidelity gate, text & DOCX pipelines
+  detector.py   explainable AI-likelihood scoring
+  providers.py  multi-provider LLM pool with failover and cooldowns
+  document.py   DOCX tagging/rebuild, PDF/TXT/MD extraction, checkpoints
+  lint.py       integrity and grammar checks, readability
+  text.py       sentence splitting, conjugation (no NLTK needed)
+  web.py, templates/index.html   web studio
+  cli.py, gui.py                 command line and desktop app
+tools/detector_harness.py        optional checks against third-party detectors
+tests/                           offline pytest suite
+```
+
+## Development
+
+```bash
+pip install -r requirements-dev.txt
+pytest            # fully offline; API keys in your environment are ignored
+ruff check .
+```
+
+Optional extras: `pip install pypdf` (PDF import, included in `requirements.txt`), `pip install ftfy` (encoding repair), `pip install torch transformers` (perplexity signal).
+
+## License
+
+[MIT](LICENSE) © 2024–2026 Kamran Ashraf.
 
 ---
 
@@ -169,4 +174,3 @@ Copyright (c) 2024-2026 **Kamran Ashraf**.
 [![Contact Email](https://img.shields.io/badge/Email-chkamran32b%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:chkamran32b@gmail.com)
 
 </div>
-

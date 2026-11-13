@@ -12,7 +12,7 @@ _PKG_DIR = Path(__file__).resolve().parent
 if str(_PKG_DIR) not in sys.path:
     sys.path.insert(0, str(_PKG_DIR))
 
-from humanizer.detector import (
+from humanizer.detector import (  # noqa: E402,F401
     score_text,
     sentence_perplexity,
     smooth_sentences,

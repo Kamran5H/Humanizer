@@ -1,8 +1,13 @@
 """
-Persistent Multi-Provider LLM Pool and Rate-Limiter Module.
-Handles token-bucket throttling, persistent on-disk cooldowns, multi-cloud failover,
-and thread-safe endpoint selection across Groq, Cerebras, SambaNova, OpenRouter,
-GitHub Models, Gemini OpenAI-compatible endpoints, and local Ollama.
+Multi-provider LLM pool with automatic failover.
+
+* Discovers every OpenAI-compatible provider whose key is present in the
+  environment, ``.env`` or ``.keys.env`` (Gemini, Groq, Cerebras, SambaNova,
+  OpenRouter, GitHub Models, Together, Mistral, DeepInfra, plus any custom
+  ``STEALTH_API_BASE`` and a local Ollama fallback).
+* Rotates across ready endpoints, respects per-host pacing without blocking
+  other hosts, and puts failing endpoints on a cooldown that survives restarts.
+* Thread-safe: worker threads share one pool.
 """
 
 from __future__ import annotations
@@ -10,10 +15,11 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
+import socket
 import threading
 import time
 import urllib.error
+import urllib.parse
 import urllib.request
 from pathlib import Path
 from typing import Optional
@@ -22,55 +28,89 @@ from humanizer.config import HumanizerConfig
 
 logger = logging.getLogger(__name__)
 
-# State persistence directory
-_STATE_DIR = Path(os.environ.get("LOCALAPPDATA") or os.environ.get("XDG_DATA_HOME") or Path.home() / ".local/share") / "humanizer_pro"
+_STATE_DIR = Path(os.environ.get("HUMANIZER_HOME") or os.environ.get("LOCALAPPDATA")
+                  or os.environ.get("XDG_DATA_HOME") or Path.home() / ".local" / "share") / "humanizer_pro"
 _STATE_FILE = _STATE_DIR / "provider_state.json"
 
-_THROTTLE_LOCK = threading.Lock()
-_LAST_CALL_BY_HOST: dict[str, float] = {}
-_MIN_INTERVAL = 3.5  # Base seconds between outbound calls to same host
+_MIN_INTERVAL = float(os.environ.get("HUMANIZER_MIN_INTERVAL", "1.5"))  # seconds between calls to one host
 
-# Guards the cooldown/exhaustion state below, which is read and written from
-# multiple worker threads (the pool advertises thread-safe endpoint selection).
 _STATE_LOCK = threading.RLock()
-_OAI_COOLDOWNS: dict[str, float] = {}
-_OAI_TPD_HIT: set[str] = set()
-_GEMINI_EXHAUSTED_UNTIL = [0.0]
-
+_NEXT_SLOT_BY_HOST: dict[str, float] = {}
+_COOLDOWNS: dict[str, float] = {}
+_LAST_ERROR: dict[str, str] = {}
 _KEYS_LOADED = False
+_CALL_COUNTER = 0
+_FILE_KEYS: set[str] = set()  # names defined explicitly in a .env / .keys.env file
 
+# Backwards-compatible aliases for older scripts/tests.
+_OAI_COOLDOWNS = _COOLDOWNS
+
+# (env var, base url, default models csv, display name)
 _FREE_PROVIDER_REGISTRY: list[tuple[str, str, str, str]] = [
-    # (env_var, base_url, default_models_csv, display_name)
     ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash,gemini-2.5-flash-lite", "Gemini"),
+    ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile,llama-3.1-8b-instant", "Groq"),
     ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1", "llama-3.3-70b", "Cerebras"),
     ("SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", "SambaNova"),
-    ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "deepseek/deepseek-chat:free,meta-llama/llama-3.3-70b-instruct:free,mistralai/mistral-small-24b-instruct-2501:free", "OpenRouter"),
-    ("GITHUB_TOKEN", "https://models.inference.ai.azure.com", "gpt-4o-mini,Meta-Llama-3.3-70B-Instruct", "GitHub Models"),
+    ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct:free,deepseek/deepseek-chat-v3-0324:free,mistralai/mistral-small-3.2-24b-instruct:free", "OpenRouter"),
+    ("GITHUB_MODELS_TOKEN", "https://models.inference.ai.azure.com", "gpt-4o-mini,Meta-Llama-3.3-70B-Instruct", "GitHub Models"),
     ("TOGETHER_API_KEY", "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo", "Together"),
     ("MISTRAL_API_KEY", "https://api.mistral.ai/v1", "mistral-small-latest", "Mistral"),
-    ("DEEPINFRA_API_KEY", "https://api.deepinfra.com/v1/openai", "meta-llama/Meta-Llama-3.3-70B-Instruct", "DeepInfra"),
-    ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile,llama-3.1-8b-instant", "Groq"),
+    ("DEEPINFRA_API_KEY", "https://api.deepinfra.com/v1/openai", "meta-llama/Llama-3.3-70B-Instruct", "DeepInfra"),
+    ("OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini", "OpenAI"),
 ]
 
+_SYSTEM_PROMPT = (
+    "You are an expert human editor. You rewrite text so it reads as if a skilled person wrote it, "
+    "while keeping every fact exactly. You reply with the rewritten text only."
+)
 
-def load_keys_if_needed() -> None:
+
+# ---------------------------------------------------------------------------
+# Key loading & persistent state
+# ---------------------------------------------------------------------------
+def _parse_env_file(path: Path) -> dict[str, str]:
+    out: dict[str, str] = {}
+    try:
+        for line in path.read_text(encoding="utf-8-sig").splitlines():
+            line = line.strip()
+            if not line or line.startswith("#") or "=" not in line:
+                continue
+            if line.startswith("export "):
+                line = line[7:]
+            k, v = line.split("=", 1)
+            v = v.strip()
+            if " #" in v and not v.startswith(("'", '"')):
+                v = v.split(" #", 1)[0].strip()
+            if len(v) >= 2 and v[0] == v[-1] and v[0] in "'\"":
+                v = v[1:-1]
+            if k.strip() and v:
+                out[k.strip()] = v
+    except Exception as e:  # pragma: no cover - unreadable file
+        logger.debug("Could not read %s: %s", path, e)
+    return out
+
+
+def key_file_candidates() -> list[Path]:
+    root = Path(__file__).resolve().parent.parent
+    home_cfg = Path.home() / ".config" / "humanizer"
+    seen: list[Path] = []
+    for base in (Path.cwd(), root, root.parent, home_cfg):
+        for name in (".keys.env", ".env"):
+            p = base / name
+            if p not in seen:
+                seen.append(p)
+    return seen
+
+
+def load_keys_if_needed(force: bool = False) -> None:
     global _KEYS_LOADED
-    if _KEYS_LOADED:
+    if _KEYS_LOADED and not force:
         return
-    for p in (
-        Path(__file__).parent.parent / ".keys.env",
-        Path(__file__).parent.parent.parent / ".keys.env",
-        Path.cwd() / ".keys.env",
-    ):
-        if p.exists():
-            try:
-                for line in p.read_text(encoding="utf-8").splitlines():
-                    if "=" in line and not line.strip().startswith("#"):
-                        k, v = line.strip().split("=", 1)
-                        os.environ.setdefault(k.strip(), v.strip())
-            except Exception:
-                pass
-            break
+    for p in key_file_candidates():
+        if p.is_file():
+            for k, v in _parse_env_file(p).items():
+                os.environ.setdefault(k, v)
+                _FILE_KEYS.add(k)
     _load_persistent_cooldowns()
     _KEYS_LOADED = True
 
@@ -81,74 +121,53 @@ def _load_persistent_cooldowns() -> None:
     try:
         data = json.loads(_STATE_FILE.read_text(encoding="utf-8"))
         now = time.time()
-        cooldowns = data.get("cooldowns", {})
         with _STATE_LOCK:
-            for ep, ts in cooldowns.items():
-                if ts > now:
-                    _OAI_COOLDOWNS[ep] = ts
-            _GEMINI_EXHAUSTED_UNTIL[0] = data.get("gemini_exhausted_until", 0.0)
+            for ep, ts in (data.get("cooldowns") or {}).items():
+                if isinstance(ts, (int, float)) and ts > now:
+                    _COOLDOWNS[ep] = float(ts)
     except Exception as e:
-        logger.debug(f"Failed to load persistent cooldown state: {e}")
+        logger.debug("Failed to load cooldown state: %s", e)
 
 
 def _save_persistent_cooldowns() -> None:
     try:
-        _STATE_DIR.mkdir(parents=True, exist_ok=True)
         with _STATE_LOCK:
-            # snapshot under lock so a concurrent mutation can't corrupt json.dumps
-            payload = {
-                "cooldowns": dict(_OAI_COOLDOWNS),
-                "gemini_exhausted_until": _GEMINI_EXHAUSTED_UNTIL[0],
-                "updated_at": time.time(),
-            }
-        _STATE_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+            payload = {"cooldowns": {k: v for k, v in _COOLDOWNS.items() if v > time.time()},
+                       "updated_at": time.time()}
+        _STATE_DIR.mkdir(parents=True, exist_ok=True)
+        tmp = _STATE_FILE.with_suffix(".tmp")
+        tmp.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        tmp.replace(_STATE_FILE)
     except Exception as e:
-        logger.debug(f"Failed to save persistent cooldown state: {e}")
+        logger.debug("Failed to save cooldown state: %s", e)
 
 
 def reset_cooldowns() -> None:
     """Clear all persistent and in-memory cooldowns."""
     with _STATE_LOCK:
-        _OAI_COOLDOWNS.clear()
-        _OAI_TPD_HIT.clear()
-        _GEMINI_EXHAUSTED_UNTIL[0] = 0.0
+        _COOLDOWNS.clear()
+        _LAST_ERROR.clear()
+        _NEXT_SLOT_BY_HOST.clear()
     _save_persistent_cooldowns()
 
 
+# ---------------------------------------------------------------------------
+# Pool construction
+# ---------------------------------------------------------------------------
 def _host_key(url: str) -> str:
-    import urllib.parse
     try:
-        p = urllib.parse.urlparse(url)
-        return p.netloc or url
+        return urllib.parse.urlparse(url).netloc or url
     except Exception:
         return url
-
-
-def _provider_wait(base_url: str) -> float:
-    host = _host_key(base_url)
-    with _THROTTLE_LOCK:
-        last = _LAST_CALL_BY_HOST.get(host, 0.0)
-        return max(0.0, _MIN_INTERVAL - (time.time() - last))
-
-
-def _throttle(base_url: str) -> None:
-    host = _host_key(base_url)
-    with _THROTTLE_LOCK:
-        last = _LAST_CALL_BY_HOST.get(host, 0.0)
-        wait = _MIN_INTERVAL - (time.time() - last)
-        if wait > 0:
-            time.sleep(wait)
-        _LAST_CALL_BY_HOST[host] = time.time()
 
 
 def _ep_key(base_url: str, model: str) -> str:
     return f"{base_url}||{model}"
 
 
-def _cool_endpoint(base_url: str, model: str, seconds: float) -> None:
-    with _STATE_LOCK:
-        _OAI_COOLDOWNS[_ep_key(base_url, model)] = time.time() + seconds
-    _save_persistent_cooldowns()
+def _is_local(base_url: str) -> bool:
+    host = _host_key(base_url).split(":")[0]
+    return host in ("localhost", "127.0.0.1", "0.0.0.0", "::1") or host.endswith(".local")
 
 
 def _build_pool(primary_base: Optional[str] = None) -> list[dict]:
@@ -157,208 +176,233 @@ def _build_pool(primary_base: Optional[str] = None) -> list[dict]:
     seen: set[tuple[str, str]] = set()
 
     def add(name: str, base: str, model: str, key: str) -> None:
-        k = (base, model)
+        k = (base.rstrip("/"), model)
         if not base or not model or not key or k in seen:
             return
         seen.add(k)
-        pool.append({"name": name, "base_url": base, "model": model, "api_key": key})
-
-    # First add registry providers (Gemini first for top quality and fast response)
-    for env_k, base_url, models_csv, display in _FREE_PROVIDER_REGISTRY:
-        k = os.environ.get(env_k, "").strip()
-        if k:
-            override = os.environ.get(env_k.replace("_API_KEY", "_MODELS").replace("_TOKEN", "_MODELS"), "").strip()
-            models = [x.strip() for x in (override or models_csv).split(",") if x.strip()]
-            for m in models:
-                add(display, base_url, m, k)
+        pool.append({"name": name, "base_url": base.rstrip("/"), "model": model, "api_key": key})
 
     base = (primary_base or os.environ.get("STEALTH_API_BASE", "")).strip()
     if base:
-        key = os.environ.get("STEALTH_API_KEY", "").strip() or "ollama"
-        models_raw = os.environ.get("STEALTH_MODEL", "llama-3.3-70b-versatile,llama-3.1-8b-instant")
-        if "groq.com" in base and any("/" in m for m in models_raw.split(",")):
-            models_raw = "llama-3.3-70b-versatile,llama-3.1-8b-instant"
+        key = os.environ.get("STEALTH_API_KEY", "").strip() or "none"
+        models_raw = os.environ.get("STEALTH_MODEL", "").strip() or "llama-3.3-70b-versatile"
         for m in [x.strip() for x in models_raw.split(",") if x.strip()]:
-            add("Primary", base, m, key)
+            add("Custom", base, m, key)
+
+    for env_k, base_url, models_csv, display in _FREE_PROVIDER_REGISTRY:
+        key = os.environ.get(env_k, "").strip()
+        if not key and env_k == "GITHUB_MODELS_TOKEN" and "GITHUB_TOKEN" in _FILE_KEYS:
+            # A generic GITHUB_TOKEN from the shell/CI is NOT used implicitly (privacy);
+            # only one the user placed in a key file on purpose.
+            key = os.environ.get("GITHUB_TOKEN", "").strip()
+        if not key:
+            continue
+        override_var = env_k.rsplit("_", 2)[0] + "_MODELS" if env_k.endswith("_API_KEY") else env_k.split("_")[0] + "_MODELS"
+        override = os.environ.get(override_var, "").strip()
+        for m in [x.strip() for x in (override or models_csv).split(",") if x.strip()]:
+            add(display, base_url, m, key)
 
     fb = os.environ.get("STEALTH_FALLBACK_BASE", "").strip()
     if fb:
-        fb_model = os.environ.get("STEALTH_FALLBACK_MODEL", "qwen2.5:1.5b").strip()
+        fb_model = os.environ.get("STEALTH_FALLBACK_MODEL", "qwen2.5:7b").strip()
         fb_key = os.environ.get("STEALTH_FALLBACK_KEY", "ollama").strip() or "ollama"
         add("Local (Ollama)", fb, fb_model, fb_key)
-
     return pool
 
 
-def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, api_key: str, timeout: float = 90.0) -> str:
-    clean_base = base_url.rstrip("/")
-    url = clean_base if clean_base.endswith("/chat/completions") else clean_base + "/chat/completions"
-    payload = {
+def has_providers() -> bool:
+    """True when at least one LLM endpoint is configured."""
+    return bool(_build_pool())
+
+
+def available_count() -> int:
+    now = time.time()
+    with _STATE_LOCK:
+        return sum(1 for e in _build_pool() if _COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0) <= now)
+
+
+# ---------------------------------------------------------------------------
+# HTTP
+# ---------------------------------------------------------------------------
+def _reserve_slot(base_url: str) -> float:
+    """Reserve the next call slot for a host and return how long to wait (lock is not held while sleeping)."""
+    host = _host_key(base_url)
+    with _STATE_LOCK:
+        now = time.time()
+        slot = max(now, _NEXT_SLOT_BY_HOST.get(host, 0.0))
+        _NEXT_SLOT_BY_HOST[host] = slot + _MIN_INTERVAL
+        return slot - now
+
+
+def _provider_wait(base_url: str) -> float:
+    with _STATE_LOCK:
+        return max(0.0, _NEXT_SLOT_BY_HOST.get(_host_key(base_url), 0.0) - time.time())
+
+
+def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, api_key: str,
+                   timeout: float = 90.0, max_tokens: Optional[int] = None) -> str:
+    url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
+    if max_tokens is None:
+        max_tokens = int(max(600, min(4096, len(prompt) / 2.2)))
+    payload: dict = {
         "model": model,
         "temperature": temperature,
-        "messages": [{"role": "user", "content": prompt}],
-        "max_tokens": 1800,
+        "messages": [
+            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "user", "content": prompt},
+        ],
+        "max_tokens": max_tokens,
     }
     if "openrouter.ai" in base_url:
         payload["include_reasoning"] = False
-
-    body = json.dumps(payload).encode("utf-8")
     req = urllib.request.Request(
         url,
-        data=body,
+        data=json.dumps(payload).encode("utf-8"),
         method="POST",
         headers={
             "Content-Type": "application/json",
             "Authorization": f"Bearer {api_key}",
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) HumanizerPro/5.0",
-            "HTTP-Referer": "https://localhost",
+            "User-Agent": "HumanizerPro/6.0",
+            "HTTP-Referer": "https://github.com/Kamran5H/Humanizer",
             "X-Title": "Humanizer Pro",
         },
     )
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read().decode("utf-8"))
 
-    choices = d.get("choices", [])
+    choices = d.get("choices") or []
     if not choices:
-        raise ValueError(f"Empty choices in LLM response from {base_url} ({model})")
+        raise ValueError(f"Empty response from {base_url} ({model})")
+    choice = choices[0]
+    content = (choice.get("message") or {}).get("content")
+    if isinstance(content, list):
+        content = "".join(p.get("text", "") if isinstance(p, dict) else str(p) for p in content)
+    text = (content or "").strip()
+    if not text:
+        raise ValueError(f"Blank content from {base_url} ({model})")
+    if choice.get("finish_reason") == "length":
+        raise ValueError(f"Truncated output from {model} (finish_reason=length)")
+    return text
 
-    msg = choices[0].get("message", {})
-    raw_content = msg.get("content")
 
-    # If content is a list of parts (multimodal/openrouter format), extract text parts
-    if isinstance(raw_content, list):
-        parts = []
-        for p in raw_content:
-            if isinstance(p, dict) and p.get("type") == "text":
-                parts.append(p.get("text", ""))
-            elif isinstance(p, str):
-                parts.append(p)
-        raw_content = "".join(parts)
-
-    return (raw_content or "").strip()
+def _cool_endpoint(base_url: str, model: str, seconds: float, reason: str = "") -> None:
+    key = _ep_key(base_url, model)
+    with _STATE_LOCK:
+        _COOLDOWNS[key] = max(_COOLDOWNS.get(key, 0.0), time.time() + seconds)
+        if reason:
+            _LAST_ERROR[key] = reason
+    _save_persistent_cooldowns()
 
 
 def _handle_error(e: BaseException, base_url: str, model: str, provider: str) -> None:
     if isinstance(e, urllib.error.HTTPError):
         code = e.code
-        err_body = ""
+        body = ""
         try:
-            err_body = e.read().decode("utf-8", errors="replace")
+            body = e.read().decode("utf-8", errors="replace")[:600].lower()
         except Exception:
             pass
-
         if code == 429:
-            # Check if this is a daily quota / TPD exhaustion rather than a temporary RPM limit
-            is_daily = any(t in err_body.lower() for t in ("resource_exhausted", "quota metric", "per day", "daily", "tpd", "tokens per day"))
-            if is_daily:
-                wait = 21600.0  # 6 hours cooldown
-                if "generativelanguage.googleapis.com" in base_url or "gemini" in provider.lower():
-                    _GEMINI_EXHAUSTED_UNTIL[0] = time.time() + wait
-                _OAI_TPD_HIT.add(_ep_key(base_url, model))
-                _cool_endpoint(base_url, model, wait)
-                logger.warning(f"{provider}/{model} daily quota exhausted. Cooldown set for {wait/3600:.1f}h.")
+            daily = any(t in body for t in ("per day", "daily", "tpd", "tokens per day", "quota exceeded", "resource_exhausted"))
+            if daily:
+                _cool_endpoint(base_url, model, 6 * 3600, "daily quota exhausted")
+                logger.warning("%s/%s daily quota exhausted; cooling 6h.", provider, model)
                 return
-
-            hdr = e.headers.get("retry-after")
-            wait = 35.0
-            if hdr:
+            wait = 30.0
+            ra = e.headers.get("retry-after") if e.headers else None
+            if ra:
                 try:
-                    wait = max(5.0, min(300.0, float(hdr)))
+                    wait = max(3.0, min(600.0, float(ra)))
                 except ValueError:
-                    wait = 35.0
-            _cool_endpoint(base_url, model, wait)
-            logger.warning(f"{provider}/{model} rate-limited. Cooldown set for {wait:.0f}s.")
-            return
-        if code in (400, 404):
-            _cool_endpoint(base_url, model, 86400.0)
-            logger.warning(f"{provider}/{model} unavailable ({code}). Disabled for 24h.")
+                    pass
+            _cool_endpoint(base_url, model, wait, "rate limited")
             return
         if code in (401, 403):
-            _cool_endpoint(base_url, model, 86400.0)
-            logger.warning(f"{provider}/{model} auth failed ({code}). Check API key.")
+            _cool_endpoint(base_url, model, 6 * 3600, f"auth failed ({code}) — check the API key")
             return
-    _cool_endpoint(base_url, model, 15.0)
-
-
-_CALL_COUNTER = 0
-_COUNTER_LOCK = threading.Lock()
+        if code == 404:
+            _cool_endpoint(base_url, model, 12 * 3600, "model not found")
+            return
+        if code in (400, 413, 422):
+            _cool_endpoint(base_url, model, 300, f"request rejected ({code})")
+            return
+        _cool_endpoint(base_url, model, 60, f"server error ({code})")
+        return
+    if isinstance(e, (urllib.error.URLError, socket.timeout, TimeoutError, ConnectionError)):
+        _cool_endpoint(base_url, model, 45, "network error")
+        return
+    _cool_endpoint(base_url, model, 20, str(e)[:120])
 
 
 def get_provider_status() -> list[dict]:
-    """Return live status, model list, and cooldown state for all configured providers."""
+    """Live status of every configured endpoint (keys are never returned)."""
     pool = _build_pool()
     now = time.time()
-    result = []
+    out = []
     with _STATE_LOCK:
         for ep in pool:
             key = _ep_key(ep["base_url"], ep["model"])
-            cd = _OAI_COOLDOWNS.get(key, 0.0)
-            is_gemini_ex = ("gemini" in ep["name"].lower() or "generativelanguage" in ep["base_url"]) and now < _GEMINI_EXHAUSTED_UNTIL[0]
-            cooling = (cd > now) or is_gemini_ex
-            remaining = max(0.0, cd - now) if cd > now else (max(0.0, _GEMINI_EXHAUSTED_UNTIL[0] - now) if is_gemini_ex else 0.0)
-            wait = _provider_wait(ep["base_url"])
-            result.append({
+            cd = _COOLDOWNS.get(key, 0.0)
+            wait = max(0.0, _NEXT_SLOT_BY_HOST.get(_host_key(ep["base_url"]), 0.0) - now)
+            out.append({
                 "name": ep["name"],
                 "model": ep["model"],
                 "base_url": ep["base_url"],
-                "status": "cooling_down" if cooling else ("throttled" if wait > 0.1 else "ready"),
-                "cooldown_remaining_sec": round(remaining, 1),
+                "local": _is_local(ep["base_url"]),
+                "status": "cooling_down" if cd > now else ("throttled" if wait > 0.1 else "ready"),
+                "cooldown_remaining_sec": round(max(0.0, cd - now), 1),
                 "throttle_wait_sec": round(wait, 1),
+                "last_error": _LAST_ERROR.get(key, "") if cd > now else "",
             })
-    return result
+    return out
 
 
-def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperature: float = 1.0) -> str:
-    """Execute LLM call across the provider pool with automatic failover and load balancing."""
+def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperature: float = 0.9) -> str:
+    """Call the first healthy endpoint, failing over across the pool."""
+    global _CALL_COUNTER
     pool = _build_pool()
     if not pool:
-        raise RuntimeError("No LLM providers configured. Please add an API key to .keys.env")
+        raise RuntimeError("No LLM providers configured. Add an API key to .env or .keys.env (see PROVIDERS.md).")
 
     now = time.time()
-    available = [
-        e for e in pool
-        if now >= _OAI_COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0)
-        and not (("gemini" in e["name"].lower() or "generativelanguage" in e["base_url"]) and now < _GEMINI_EXHAUSTED_UNTIL[0])
-    ]
-    if not available:
-        available = sorted(pool, key=lambda e: _OAI_COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0))[:2]
-        soonest = _OAI_COOLDOWNS.get(_ep_key(available[0]["base_url"], available[0]["model"]), 0.0)
-        sleep_wait = max(0.0, min(soonest - now, 8.0))
-        if sleep_wait > 0.5:
-            time.sleep(sleep_wait)
-
-    global _CALL_COUNTER
-    with _COUNTER_LOCK:
+    with _STATE_LOCK:
+        ready = [e for e in pool if _COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0) <= now]
         _CALL_COUNTER += 1
-        rr_offset = _CALL_COUNTER
+        rr = _CALL_COUNTER
+    if not ready:
+        with _STATE_LOCK:
+            soonest = min(pool, key=lambda e: _COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0))
+            wait = _COOLDOWNS.get(_ep_key(soonest["base_url"], soonest["model"]), 0.0) - now
+        if wait > 20:
+            raise RuntimeError(f"All {len(pool)} LLM endpoints are cooling down (next ready in {wait:.0f}s).")
+        time.sleep(max(0.0, wait))
+        ready = [soonest]
 
-    def _sort_key(idx_ep):
-        idx, ep = idx_ep
-        base = ep["base_url"]
-        is_local = "localhost" in base or "127.0.0.1" in base
-        wait = _provider_wait(base)
-        # Prioritize ready endpoints with zero wait, then round-robin across different providers
-        is_ready = 0.0 if wait <= 0.05 else wait
-        return (999.0 if is_local else is_ready, (idx + rr_offset) % max(1, len(available)))
+    # Prefer cloud endpoints with no pending wait, rotate between equals, local last.
+    def _rank(item: tuple[int, dict]) -> tuple:
+        i, ep = item
+        return (_is_local(ep["base_url"]), round(_provider_wait(ep["base_url"]), 1), (i + rr) % len(ready))
 
-    available = [ep for _, ep in sorted(enumerate(available), key=_sort_key)]
-    last_err: Optional[Exception] = None
-
-    for ep in available:
+    ordered = [ep for _, ep in sorted(enumerate(ready), key=_rank)]
+    last_err: Optional[BaseException] = None
+    for ep in ordered:
+        if cfg is not None and cfg.cancelled:
+            raise RuntimeError("Cancelled")
         name, base, model, key = ep["name"], ep["base_url"], ep["model"], ep["api_key"]
-        is_local = "localhost" in base or "127.0.0.1" in base
         try:
-            if not is_local:
-                _throttle(base)
-            if cfg and cfg.status_callback:
-                cfg.status_callback(f"Calling {name} ({model})...")
-            return _call_endpoint(prompt, temperature, base, model, key)
+            if not _is_local(base):
+                delay = _reserve_slot(base)
+                if delay > 0:
+                    time.sleep(delay)
+            if cfg is not None:
+                cfg.status(f"Calling {name} ({model})…")
+            return _call_endpoint(prompt, temperature, base, model, key, timeout=120.0 if _is_local(base) else 75.0)
         except Exception as e:
             last_err = e
+            logger.info("%s/%s failed: %s", name, model, e)
             _handle_error(e, base, model, name)
-            continue
+    raise RuntimeError(f"All LLM providers failed. Last error: {last_err}")
 
-    if last_err is not None:
-        raise last_err
-    raise RuntimeError("All LLM providers in the pool failed.")
 
+__all__ = ["call_llm_pool", "get_provider_status", "reset_cooldowns", "has_providers",
+           "available_count", "load_keys_if_needed", "key_file_candidates"]

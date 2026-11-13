@@ -7,19 +7,17 @@ live AI score gauge badge, and responsive multithreaded processing.
 from __future__ import annotations
 
 import logging
-import os
-import random
 import sys
 import threading
+import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-import tkinter as tk
 from typing import Optional
 
 from humanizer.config import HumanizerConfig
 from humanizer.detector import score_text
-from humanizer.engine import humanize_text, humanize_docx
-from humanizer.rules import ensure_nltk_data
+from humanizer.document import docx_text
+from humanizer.engine import humanize_docx, humanize_text
 
 logger = logging.getLogger(__name__)
 
@@ -49,11 +47,11 @@ class ResultDialog(tk.Toplevel):
         frm.pack(fill="both", expand=True)
 
         # Header Badge
-        is_passing = final_score <= 5.0
-        color = "#4A6D3F" if is_passing else ("#B8892B" if final_score <= 20.0 else "#8B2A1F")
-        verdict = "100% Human Passing — Verified Safe" if is_passing else "Humanized"
+        is_passing = final_score < 20.0
+        color = "#4A6D3F" if is_passing else ("#B8892B" if final_score < 50.0 else "#8B2A1F")
+        verdict = (metrics or {}).get("verdict") or ("Reads as human-written" if is_passing else "Humanized")
 
-        tk.Label(frm, text="Executive Audit Report", font=("Georgia", 16, "bold"), fg="#1A1613", bg="#F5F1E8").pack(anchor="w", pady=(0, 2))
+        tk.Label(frm, text="Humanization Report", font=("Georgia", 16, "bold"), fg="#1A1613", bg="#F5F1E8").pack(anchor="w", pady=(0, 2))
         tk.Label(frm, text=verdict, font=("Segoe UI", 10, "italic", "bold"), fg=color, bg="#F5F1E8").pack(anchor="w", pady=(0, 12))
 
         # Metrics Card Frame
@@ -72,9 +70,10 @@ class ResultDialog(tk.Toplevel):
 
         # Row 3: Detection Signals
         if metrics:
-            self._add_stat_row(card, "Sentence Burstiness (CV):", f"{metrics.get('burstiness', 0.0):.1f}", row=4)
-            self._add_stat_row(card, "Token Perplexity:", f"{metrics.get('perplexity', 0.0):.1f}", row=5)
-            self._add_stat_row(card, "Residual AI Tells:", f"{metrics.get('ai_tells', 0)} detected", row=6)
+            self._add_stat_row(card, "Sentence-length variation:", f"{metrics.get('burstiness') or 0.0:.1f}%", row=4)
+            ppl = metrics.get("perplexity")
+            self._add_stat_row(card, "Perplexity:", f"{ppl:.1f}" if isinstance(ppl, (int, float)) else "n/a (no model installed)", row=5)
+            self._add_stat_row(card, "Residual AI patterns:", f"{metrics.get('ai_tells', 0)} found", row=6)
 
         if duration > 0:
             self._add_stat_row(card, "Processing Time:", f"{duration:.1f}s", row=7)
@@ -101,14 +100,14 @@ class ResultDialog(tk.Toplevel):
 
     def _copy_report(self, parent, init_sc, final_sc, words, paras, metrics, duration) -> None:
         rep = (
-            f"=== HUMANIZER PRO AUDIT REPORT ===\n"
-            f"Verdict:           {'100% Human Passing' if final_sc <= 5.0 else 'Humanized'}\n"
+            f"=== HUMANIZER PRO REPORT ===\n"
+            f"Verdict:           {(metrics or {}).get('verdict', 'Humanized')}\n"
             f"Initial AI Score:  {init_sc:.1f}%\n"
             f"Final AI Score:    {final_sc:.1f}% (Reduction: {init_sc - final_sc:.1f}%)\n"
             f"Paragraphs:        {paras}\n"
             f"Words:             {words}\n"
-            f"Burstiness:        {metrics.get('burstiness', 0.0) if metrics else 0.0}\n"
-            f"Perplexity:        {metrics.get('perplexity', 0.0) if metrics else 0.0}\n"
+            f"Length variation:  {metrics.get('burstiness', 0.0) if metrics else 0.0}%\n"
+            f"Perplexity:        {(metrics or {}).get('perplexity') or 'n/a'}\n"
             f"AI Tells:          {metrics.get('ai_tells', 0) if metrics else 0}\n"
             f"Time:              {duration:.1f}s\n"
         )
@@ -146,7 +145,7 @@ class HumanizerApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self._enable_hidpi()
-        self.title("Humanizer Pro — Academic & Scientific Stealth Suite")
+        self.title("Humanizer Pro")
         self.geometry("1240x820")
         self.minsize(920, 620)
         self.configure(bg=self.PAL["bg"])
@@ -155,8 +154,9 @@ class HumanizerApp(tk.Tk):
         self._cancel_event = threading.Event()
         self._start_time = 0.0
         self._initial_score = 0.0
+        self._loaded_text: Optional[str] = None
+        self._web_started = False
         self._build_ui()
-        threading.Thread(target=ensure_nltk_data, daemon=True).start()
 
     def _enable_hidpi(self) -> None:
         if sys.platform == "win32":
@@ -192,7 +192,7 @@ class HumanizerApp(tk.Tk):
         hdr.pack(fill="x")
 
         tk.Label(hdr, text="Humanizer Pro", font=self.FONT_DISPLAY, fg=self.PAL["text"], bg=self.PAL["bg"]).pack(anchor="w")
-        tk.Label(hdr, text="Academic & Journal-Grade Stealth Rewriting Engine", font=self.FONT_SUB, fg=self.PAL["muted"], bg=self.PAL["bg"]).pack(anchor="w")
+        tk.Label(hdr, text="Natural rewriting with a local AI-likelihood score", font=self.FONT_SUB, fg=self.PAL["muted"], bg=self.PAL["bg"]).pack(anchor="w")
 
         # Controls Toolbar
         tb = tk.Frame(self, bg=self.PAL["bg"], padx=24, pady=8)
@@ -213,8 +213,17 @@ class HumanizerApp(tk.Tk):
         self.btn_score = ttk.Button(tb, text="Check Score", style="Ghost.TButton", command=self._score_input)
         self.btn_score.pack(side="left", padx=(0, 8))
 
-        self.btn_web = ttk.Button(tb, text="🌐 Web Studio", style="Ghost.TButton", command=self._open_web_studio)
+        self.btn_web = ttk.Button(tb, text="Web Studio", style="Ghost.TButton", command=self._open_web_studio)
         self.btn_web.pack(side="left", padx=(0, 8))
+
+        self.var_register = tk.StringVar(value="Academic")
+        self.var_level = tk.StringVar(value="Max")
+        self.var_engine = tk.StringVar(value="Auto")
+        for label, var, values in (("Register", self.var_register, ("Academic", "General")),
+                                   ("Strength", self.var_level, ("Light", "Balanced", "Max")),
+                                   ("Engine", self.var_engine, ("Auto", "Offline"))):
+            tk.Label(tb, text=label, font=self.FONT_BTN, fg=self.PAL["muted"], bg=self.PAL["bg"]).pack(side="left", padx=(10, 4))
+            ttk.Combobox(tb, textvariable=var, values=values, state="readonly", width=9).pack(side="left")
 
         self.lbl_score_badge = tk.Label(tb, text="AI Score: —", font=("Segoe UI", 10, "bold"), fg=self.PAL["muted"], bg=self.PAL["bg"])
         self.lbl_score_badge.pack(side="right", padx=8)
@@ -276,10 +285,16 @@ class HumanizerApp(tk.Tk):
         self.lbl_status.pack(fill="x", side="bottom")
 
     def _open_web_studio(self) -> None:
-        import threading
         import webbrowser
-        threading.Thread(target=lambda: webbrowser.open("http://127.0.0.1:8000"), daemon=True).start()
-        self.lbl_status.config(text="Launched Web Studio at http://127.0.0.1:8000")
+
+        if not self._web_started:
+            from humanizer.web import launch_web
+
+            threading.Thread(target=lambda: launch_web(port=8000, open_browser=True), daemon=True).start()
+            self._web_started = True
+        else:
+            webbrowser.open("http://127.0.0.1:8000")
+        self.lbl_status.config(text="Web Studio at http://127.0.0.1:8000")
 
     def _open_file(self) -> None:
         p = filedialog.askopenfilename(filetypes=[("Documents", "*.docx *.txt *.pdf *.md")])
@@ -292,6 +307,7 @@ class HumanizerApp(tk.Tk):
             text = extract_text_from_file(path)
             self.txt_in.delete("1.0", "end")
             self.txt_in.insert("1.0", text)
+            self._loaded_text = text
             self.lbl_status.config(text=f"Loaded {path.suffix.upper()} Document: {path.name}")
         except Exception as e:
             messagebox.showerror("File Error", f"Failed to load document: {e}")
@@ -323,7 +339,7 @@ class HumanizerApp(tk.Tk):
             return
         res = score_text(text)
         sc = res["ai_score"]
-        color = self.PAL["green"] if sc <= 5.0 else (self.PAL["accent"] if sc <= 20.0 else self.PAL["red"])
+        color = self.PAL["green"] if sc < 20.0 else (self.PAL["accent"] if sc < 50.0 else self.PAL["red"])
         self.lbl_score_badge.config(text=f"AI Score: {sc:.1f}%", fg=color)
 
     def _update_progress(self, current: int, total: int, pct: float, message: str) -> None:
@@ -349,10 +365,9 @@ class HumanizerApp(tk.Tk):
         self.lbl_status.config(text="Starting stealth humanization...")
 
         cfg = HumanizerConfig(
-            use_gemini=True,
-            stealth_level=3,
-            target_pct=5.0,
-            scientific=True,
+            use_gemini=self.var_engine.get() != "Offline",
+            stealth_level={"Light": 1, "Balanced": 2, "Max": 3}.get(self.var_level.get(), 3),
+            scientific=self.var_register.get() == "Academic",
             cancel_event=self._cancel_event,
             status_callback=lambda s: self.after(0, self.lbl_status.config, {"text": s}),
             progress_callback=lambda cur, tot, pct, msg: self.after(0, self._update_progress, cur, tot, pct, msg),
@@ -360,11 +375,10 @@ class HumanizerApp(tk.Tk):
 
         def _bg():
             try:
-                if self._loaded_path and self._loaded_path.suffix.lower() == ".docx":
+                is_docx = self._loaded_path is not None and self._loaded_path.suffix.lower() == ".docx"
+                if is_docx and self._loaded_text is not None and text.strip() == self._loaded_text.strip():
                     saved = humanize_docx(self._loaded_path, cfg)
-                    import docx
-                    doc = docx.Document(str(saved))
-                    out_text = "\n\n".join(p.text for p in doc.paragraphs if p.text.strip())
+                    out_text = docx_text(saved)
                 else:
                     out_text = humanize_text(text, cfg)
                     saved = None

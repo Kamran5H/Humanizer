@@ -11,7 +11,7 @@ _PKG_DIR = Path(__file__).resolve().parent
 if str(_PKG_DIR) not in sys.path:
     sys.path.insert(0, str(_PKG_DIR))
 
-from humanizer.lint import lint_text, is_clean, readability
+from humanizer.lint import is_clean, lint_text, readability  # noqa: E402,F401
 
 if __name__ == "__main__":
     args = sys.argv[1:]
