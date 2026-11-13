@@ -1,779 +1,553 @@
 """
-Core Stealth Humanizer Engine Module.
-Handles persona prompts, guided reflexion re-rolls, surgical roughening,
-fidelity guards, and parallel document humanization for text and DOCX files.
+Core humanizer engine.
+
+Two back-ends behind one API:
+
+* **LLM** — persona-driven rewrite through the provider pool, best-of-N
+  selection with the local detector, guided re-rolls for the sentences that
+  still read as machine-written, and strict fidelity checks (numbers,
+  citations, URLs and formatting placeholders must survive).
+* **Offline rules** — :func:`humanizer.rules.rewrite`; used automatically when
+  no API key is configured or every LLM attempt fails.
+
+Text structure (Markdown headings, bullets, code fences, blank lines) is kept;
+only prose is rewritten.
 """
 
 from __future__ import annotations
 
 import concurrent.futures as cf
 import logging
-import os
-import random
 import re
-import threading
-from dataclasses import replace
 from pathlib import Path
-from typing import Callable, Optional
+from typing import Optional
 
-from docx import Document
+import docx
 
 from humanizer.config import HumanizerConfig
-from humanizer.detector import score_text, smooth_sentences, sentence_perplexity, split_sentences
-from humanizer.document import (
+from humanizer.detector import score_text, smooth_sentences
+from humanizer.document import (  # noqa: F401  (re-exported for backwards compatibility)
     Checkpoint,
     RunStyle,
     _extract_run_style,
-    _tag_runs,
     _reconstruct_runs,
-    should_skip_paragraph,
+    _tag_runs,
     iter_document_paragraphs,
+    select_paragraphs,
+    should_skip_paragraph,
 )
-from humanizer.providers import call_llm_pool
-from humanizer.rules import (
-    lock_elements,
-    unlock_elements,
-    apply_phrase_subs,
-    apply_word_subs,
-    apply_contractions,
-    fix_grammar,
-)
-try:
-    from nlp_enhance import fix_encoding as _fix_encoding, is_faithful as _is_faithful
-except Exception:
-    def _fix_encoding(t: str) -> str:  # type: ignore[misc]
-        return t
-    def _is_faithful(src: str, out: str, **kwargs) -> bool:  # type: ignore[misc]
-        return True
+from humanizer.nlp import fix_encoding as _fix_encoding
+from humanizer.nlp import is_faithful as _is_faithful
+from humanizer.patterns import BANNED_FOR_PROMPT, BANNED_PHRASES_FOR_PROMPT
+from humanizer.providers import call_llm_pool, has_providers
+from humanizer.rules import polish, rewrite
+from humanizer.text import ing_to_3sg, split_sentences
 
 logger = logging.getLogger(__name__)
 
-# Personas
+MIN_WORDS_TO_REWRITE = 6
+
 _PERSONAS = [
     "a sharp newspaper columnist who writes tight, concrete sentences and hates filler",
-    "a working professional explaining something clearly to a smart colleague over email",
-    "a magazine feature writer with a calm, vivid voice who varies rhythm naturally",
-    "a knowledgeable subject-matter blogger who writes in a relaxed but precise voice",
-    "a careful technical writer who is precise but plain-spoken and never pads",
-    "an experienced essayist who mixes short punchy lines with longer winding ones",
+    "a working professional explaining something clearly to a smart colleague",
+    "a magazine feature writer with a calm, vivid voice",
+    "a knowledgeable blogger who writes in a relaxed but precise voice",
+    "a careful technical writer who is plain-spoken and never pads",
+    "an experienced essayist who mixes short, punchy lines with longer, winding ones",
 ]
-
 _SCI_PERSONAS = [
-    "a senior scientist and lead author who writes concise, active, evidence-driven prose without academic jargon or padding",
-    "a seasoned journal editor at Nature or Science who rewrites dense academic drafts into crisp, punchy, direct human prose",
-    "an expert academic author who uses natural sentence rhythm (mixing 6-12 word observations with 14-22 word explanations) and avoids robotic nominalizations",
-    "a distinguished professor explaining key research findings with direct clarity, active verbs, and zero fluff",
-    "a technical specialist writing an authoritative, objective manuscript with precise domain terms and natural human cadence",
+    "a senior scientist writing a concise, evidence-driven paper without padding",
+    "a journal editor who turns dense drafts into crisp, direct prose",
+    "an experienced academic author with a natural sentence rhythm and active verbs",
+    "a professor explaining research findings clearly and precisely",
+    "a domain specialist writing an objective manuscript with exact terminology",
 ]
 
-_BANNED_WORDS = (
-    "delve, delves, delving, leverage, leverages, leveraging, foster, fosters, fostering, "
-    "harness, harnessing, transformative, revolutionize, revolutionise, pivotal, robust, "
-    "seamless, seamlessly, nuanced, multifaceted, holistic, realm, landscape, tapestry, "
-    "underscore, underscores, showcasing, showcase, testament, comprehensive, facilitate, "
-    "facilitates, demonstrate, demonstrates, utilize, utilizes, utilise, moreover, "
-    "furthermore, ultimately, notably, indeed, paramount, crucial, vital, intricate, "
-    "myriad, plethora, bolster, navigate, navigating, empower, streamline, cutting-edge, "
-    "game-changer, unprecedented, ever-evolving, array of variables, empirical foundations, "
-    "cumulative advancements, interdisciplinary collaboration, human emergence, "
-    "bears the designation, within human experience"
-)
+_BANNED_WORDS = ", ".join(BANNED_FOR_PROMPT)
+_BANNED_PHRASES = "; ".join(f'"{p}"' for p in BANNED_PHRASES_FOR_PROMPT)
 
-_BANNED_PHRASES = (
-    '"It is important to note", "it is worth noting", "plays a crucial/pivotal/key role", '
-    '"in today\'s world", "in the modern era", "as we navigate", "when it comes to", '
-    '"a testament to", "rich tapestry", "in the realm of", "in the landscape of", '
-    '"bears the designation of", "within human experience", "array of external variables"'
-)
-
+# ---------------------------------------------------------------------------
+# Output cleaning
+# ---------------------------------------------------------------------------
 _WRAPPER_LEAD = re.compile(
-    r"^\s*(?:```[a-z]*\s*)?(?:sure[,!.]?\s*|certainly[,!.]?\s*|of course[,!.]?\s*)?"
-    r"(?:here(?:'s| is| are)[^:\n]*:\s*|"
-    r"(?:the\s+)?(?:rewritten|revised|humaniz(?:ed|er)|edited|new)\s+"
-    r"(?:text|paragraph|version|line)[^:\n]*:\s*)",
+    r"^\s*(?:```[a-z]*\s*)?(?:(?:sure|certainly|of course|okay|ok)[,!.]?\s*)?"
+    r"(?:here(?:'s| is| are)[^:\n]{0,80}:\s*|"
+    r"(?:the\s+)?(?:rewritten|revised|humaniz(?:ed|er)|edited|new|final)\s+(?:text|paragraph|version|line|sentence)[^:\n]{0,40}:\s*)",
+    re.IGNORECASE,
+)
+_COT_TELLS = (
+    "<think", "</think", "thinking process", "analyze user input", "mental iteration",
+    "constraint check", "check against constraints", "here's a thinking process",
+    "rewrite idea", "refined draft",
+)
+_META_LINE = re.compile(
+    r"^(?:[-*•]|\d+[.)])?\s*\**(?:note|notes|explanation|changes made|word count|original|"
+    r"rewritten|draft \d|constraint|register|vocabulary|banned words|target text|context)\b[^:\n]{0,30}:",
     re.IGNORECASE,
 )
 
-_AI_TELL_SUBS: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bgame[- ]?changers?\b", re.I), "big shift"),
-    (re.compile(r"\bfundamentally\b", re.I), "basically"),
-    (re.compile(r"\bstreamlin(e|es|ing|ed)\b", re.I), "simplify"),
-    (re.compile(r"\bleverag(e|es|ing|ed)\b", re.I), "use"),
-    (re.compile(r"\bharness(es|ing|ed)?\b", re.I), "use"),
-    (re.compile(r"\bdelv(e|es|ing|ed)\s+into\b", re.I), "look into"),
-    (re.compile(r"\bfacilitat(e|es|ing|ed)\b", re.I), "help"),
-    (re.compile(r"\butiliz(e|es|ing|ed)\b", re.I), "use"),
-    (re.compile(r"\butilis(e|es|ing|ed)\b", re.I), "use"),
-    (re.compile(r"\brevolutioniz(e|es|ing|ed)\b", re.I), "reshape"),
-    (re.compile(r"\btransformative\b", re.I), "major"),
-    (re.compile(r"\bunderscor(e|es|ing|ed)\b", re.I), "highlight"),
-    (re.compile(r"\bshowcas(e|es|ing|ed)\b", re.I), "show"),
-    (re.compile(r"\bseamless(ly)?\b", re.I), "smooth"),
-    (re.compile(r"\bmultifaceted\b", re.I), "many-sided"),
-    (re.compile(r"\bpivotal\b", re.I), "key"),
-    (re.compile(r"\bbolster(s|ing|ed)?\b", re.I), "strengthen"),
-    (re.compile(r"\bempower(s|ing|ed)?\b", re.I), "enable"),
-    (re.compile(r"\bmeticulous(ly)?\b", re.I), "careful"),
-    (re.compile(r"\bin today'?s (?:fast-paced|digital|modern) world\b", re.I), "now"),
-    (re.compile(r"\bit is important to note that\b", re.I), ""),
-    (re.compile(r"\bit is worth noting that\b", re.I), ""),
-    (re.compile(r"\bplays? a (?:crucial|pivotal|vital|key) role\b", re.I), "matters"),
-]
-
-_DESLANG: list[tuple[re.Pattern[str], str]] = [
-    (re.compile(r"\bsuper\s+(?=\w)", re.I), "highly "),
-    (re.compile(r"\breally\s+(?=changing|important|good|big|hard|nice|great)\b", re.I), ""),
-    (re.compile(r"\bhuge\s+amounts?\b", re.I), "vast amounts"),
-    (re.compile(r"\bhuge\s+promise\b", re.I), "real promise"),
-    (re.compile(r"\bhuge\b", re.I), "great"),
-    (re.compile(r"\bawesome\b", re.I), "impressive"),
-    (re.compile(r"\bfolks\b", re.I), "people"),
-    (re.compile(r"\bmaking waves\b", re.I), "making an impact"),
-]
-
-
-_COT_TELLS = [
-    "<think", "</think", "<thought", "</thought", "[think]", "[/think]",
-    "thinking process", "analyze user input", "mental iteration",
-    "deconstruct original", "constraint check", "burstiness #",
-    "draft - mental", "recount carefully", "check against constraints",
-    "check constraints", "here's a thinking process", "here is a thinking process",
-    "analyze original text", "rewrite idea", "refined draft",
-]
-
 
 def _is_thinking_trace(text: str) -> bool:
-    if not text:
-        return False
-    lower = text.lower()
-    return any(t in lower for t in _COT_TELLS)
+    low = (text or "").lower()
+    return any(t in low for t in _COT_TELLS)
 
 
 def _strip_wrappers(text: str) -> str:
+    """Remove reasoning blocks, preambles, code fences, quotes and trailing notes from model output."""
     if not text:
         return ""
-
-    # 0. Handle compound/reasoning models with "**Reasoning** ... **Answer**" blocks
-    if re.search(r"\*\*(?:reasoning|thought|thinking)\*\*.*?\*\*(?:answer|response|output|rewritten text)\*\*", text, flags=re.DOTALL | re.IGNORECASE):
-        text = re.sub(r".*?\*\*(?:answer|response|output|rewritten text)\*\*[:\s]*", "", text, flags=re.DOTALL | re.IGNORECASE)
-    elif re.search(r"^(?:reasoning|thought|thinking):.*?\n+(?:answer|response|output|rewritten text):", text, flags=re.DOTALL | re.IGNORECASE):
-        text = re.sub(r".*?\n+(?:answer|response|output|rewritten text):[:\s]*", "", text, flags=re.DOTALL | re.IGNORECASE)
-
-    # 1. Strip closed XML thinking & reasoning tags
-    text = re.sub(r"<(?:think|thought|reasoning|thought_process)>.*?</(?:think|thought|reasoning|thought_process)>", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"\[(?:think|thought|reasoning)\].*?\[/(?:think|thought|reasoning)\]", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"```(?:thought|thinking|think|reasoning)\b.*?```", "", text, flags=re.DOTALL | re.IGNORECASE)
-
-    # 2. Strip unclosed thinking tags (if model was truncated or omitted closing tag)
-    text = re.sub(r"<(?:think|thought|reasoning|thought_process)>.*$", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"\[(?:think|thought|reasoning)\].*$", "", text, flags=re.DOTALL | re.IGNORECASE)
-    text = re.sub(r"```(?:thought|thinking|think|reasoning)\b.*$", "", text, flags=re.DOTALL | re.IGNORECASE)
-
-    # 3. Strip dangling closing tags
-    text = re.sub(r"</(?:think|thought|reasoning|thought_process)>", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\[/(?:think|thought|reasoning)\]", "", text, flags=re.IGNORECASE)
-
-    # 4. Strip markdown reasoning/analysis headers and structured CoT blocks
-    cot_patterns = [
-        r"^(?:here(?:'s| is) a thinking process:?|thinking process:?).*?(?=\n\n|\n[A-Z0-9]|\Z)",
-        r"^\s*(?:\d+\.\s*)?\*\*(?:Analyze User Input|Analyze Original Text|Deconstruct Original Sentence|Draft|Mental Iteration|Constraint Check|Burstiness|Sentence \d|Rewrite idea|Check against constraints|Recount carefully|Apply Constraints|Verify|Reasoning).*?\*\*.*?(?=\n\n|\n[A-Z0-9]|\Z)",
-        r"^\s*\*(?:Constraint Check|Burstiness|Sentence \d|Rewrite idea|Check|Draft \d|Refined Draft|Check constraints|Reasoning):\*.*?(?=\n\n|\n[A-Z0-9]|\Z)",
-    ]
-    for cp in cot_patterns:
-        text = re.sub(cp, "", text, flags=re.DOTALL | re.IGNORECASE | re.MULTILINE)
-
-    # 5. Iteratively strip leading conversational preambles
+    text = re.sub(r"<(think|thought|reasoning)>.*?</\1>", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"<(?:think|thought|reasoning)>.*$", "", text, flags=re.DOTALL | re.IGNORECASE)
+    text = re.sub(r"</(?:think|thought|reasoning)>", "", text, flags=re.IGNORECASE)
+    m = re.search(r"\*\*(?:answer|response|output|rewritten text|final)\*\*\s*:?\s*", text, flags=re.IGNORECASE)
+    if m:
+        text = text[m.end():]
     prev = None
     while prev != text:
         prev = text
         text = _WRAPPER_LEAD.sub("", text).strip()
-
-    # 6. Strip code block fences
     text = re.sub(r"^\s*```[a-z]*\s*", "", text, flags=re.IGNORECASE)
     text = re.sub(r"\s*```\s*$", "", text)
-
-    # 7. Strip outer wrapping quotes if matched
-    text = text.strip()
-    if len(text) >= 2 and text[0] in "\"'“”" and text[-1] in "\"'“”":
-        inner = text[1:-1].strip()
-        if inner.count('"') == 0 or inner.count('“') == 0:
-            text = inner
-
-    # 8. Filter out any remaining pure CoT lines
-    meta_prefixes = [
-        "here's a thinking", "here is a thinking", "thinking process",
-        "analyze user", "analyze original", "deconstruct original",
-        "constraint check", "burstiness", "sentence 1 (", "sentence 2 (",
-        "sentence 3 (", "rewrite idea", "refined draft", "draft 1", "draft 2",
-        "draft 3", "check against", "check constraints", "recount carefully",
-        "apply constraints", "mental iteration", "check facts", "check meaning",
-        "register:", "vocabulary:", "banned words:", "target text:", "context before:",
-        "context after:", "original sentence:", "target sentence:", "preceding:", "following:",
-    ]
-    clean_lines = []
+    lines = []
     for ln in text.splitlines():
-        ln_s = ln.strip()
-        if not ln_s:
-            clean_lines.append("")
-            continue
-        cleaned_s = re.sub(r"^(?:[-*•]|\d+[.)])\s*", "", ln_s.lower()).strip()
-        cleaned_s = re.sub(r"^\*\*|\*\*$", "", cleaned_s).strip()
-        cleaned_s = re.sub(r"^\*|\*$", "", cleaned_s).strip()
-        if any(cleaned_s.startswith(p) for p in meta_prefixes):
-            continue
-        clean_lines.append(ln)
-
-    text = "\n".join(clean_lines).strip()
+        if _META_LINE.match(ln.strip()):
+            break  # everything after "Note:" etc. is commentary
+        lines.append(ln)
+    text = "\n".join(lines).strip()
+    if len(text) >= 2 and text[0] in "\"“'" and text[-1] in "\"”'" and text.count('"') <= 2:
+        text = text[1:-1].strip()
     text = re.sub(r"\n{3,}", "\n\n", text)
-
-    # If resulting text still contains raw thinking traces, reject it
-    if _is_thinking_trace(text):
-        return ""
-
-    return text.strip()
-
-
-def _deslang(text: str) -> str:
-    for pat, repl in _DESLANG:
-        def sub(m: re.Match, r: str = repl) -> str:
-            g = m.group(0)
-            if r and g[:1].isupper():
-                return r[:1].upper() + r[1:]
-            return r
-        text = pat.sub(sub, text)
-    return re.sub(r"[ \t]{2,}", " ", text).strip()
-
-
-def _strip_ai_tells(text: str) -> str:
-    for pat, repl in _AI_TELL_SUBS:
-        def sub(m: re.Match, r: str = repl) -> str:
-            g = m.group(0)
-            if r and g[:1].isupper():
-                return r[:1].upper() + r[1:]
-            return r
-        text = pat.sub(sub, text)
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    text = re.sub(r"\s+([,.;:])", r"\1", text)
-    return text.strip()
-
-
-def _inflect_ing_to_3sg(verb_ing: str) -> str:
-    """Accurately convert a present participle (-ing) to 3rd person singular present tense."""
-    v = verb_ing.lower()
-    _MAP = {
-        "having": "has", "being": "is", "improving": "improves", "reducing": "reduces",
-        "increasing": "increases", "enhancing": "enhances", "enabling": "enables",
-        "providing": "provides", "creating": "creates", "generating": "generates",
-        "producing": "produces", "facilitating": "facilitates", "demonstrating": "demonstrates",
-        "indicating": "indicates", "promoting": "promotes", "ensuring": "ensures",
-        "accelerating": "accelerates", "yielding": "yields", "leading": "leads",
-        "showing": "shows", "helping": "helps", "making": "makes", "giving": "gives",
-        "taking": "takes", "changing": "changes", "causing": "causes", "limiting": "limits",
-        "mitigating": "mitigates", "optimizing": "optimizes", "optimising": "optimises",
-        "amplifying": "amplifies", "identifying": "identifies", "modifying": "modifies",
-        "satisfying": "satisfies", "underlying": "underlies", "affecting": "affects",
-        "influencing": "influences", "preventing": "prevents", "allowing": "allows",
-        "supporting": "supports", "requiring": "requires", "establishing": "establishes",
-        "extending": "extends", "expanding": "expands", "fostering": "fosters",
-        "strengthening": "strengthens", "lowering": "lowers", "raising": "raises",
-        "elevating": "elevates", "driving": "drives", "reshaping": "reshapes",
-        "transforming": "transforms", "shifting": "shifts", "opening": "opens",
-        "paving": "paves", "resulting": "results", "serving": "serves", "stopping": "stops",
-    }
-    if v in _MAP:
-        res = _MAP[v]
-        return res.capitalize() if verb_ing[:1].isupper() else res
-
-    if v.endswith("ying"):
-        res = v[:-4] + "ies"
-        return res.capitalize() if verb_ing[:1].isupper() else res
-
-    if v.endswith("ing"):
-        stem = v[:-3]
-        if len(stem) >= 3 and stem[-1] == stem[-2] and stem[-1] not in "lsz":
-            stem = stem[:-1]
-            res = stem + "s"
-            return res.capitalize() if verb_ing[:1].isupper() else res
-
-        try:
-            from nltk.corpus import wordnet
-            if wordnet.synsets(stem + "e", pos=wordnet.VERB):
-                res = stem + "es"
-                return res.capitalize() if verb_ing[:1].isupper() else res
-            if wordnet.synsets(stem, pos=wordnet.VERB):
-                res = (stem + "es") if stem.endswith(("s", "sh", "ch", "x", "z", "o")) else (stem + "s")
-                return res.capitalize() if verb_ing[:1].isupper() else res
-        except Exception:
-            pass
-
-        if stem.endswith(("s", "sh", "ch", "x", "z", "o")) or stem.endswith(("c", "v", "z", "bl", "pl", "cl", "gl", "tl")):
-            res = stem + "es"
-        else:
-            res = stem + "s"
-        return res.capitalize() if verb_ing[:1].isupper() else res
-
-    return verb_ing + "s"
+    return "" if _is_thinking_trace(text) else text.strip()
 
 
 def _guard_fidelity(src: str, out: str) -> str:
-    # 1. Strip hallucinated dummy citation tags like [citation], [ref], [source]
-    out = re.sub(r"\[(?:citation|ref|reference|source|cite|insert\s+citation)\]", "", out, flags=re.IGNORECASE)
-
-    # 2. Strict citation retention: only preserve citations that actually existed in src
-    src_cites = set(re.findall(r"\[[a-zA-Z0-9,\-\s]{1,20}\]", src))
-    out_cites = re.findall(r"\[[a-zA-Z0-9,\-\s]{1,20}\]", out)
-    for c in out_cites:
-        # Never strip run or lock placeholders
-        if not re.match(r"^__(?:RUN|LOCK)_", c) and c not in src_cites:
+    """Remove invented citation placeholders/URLs and immediate duplicate sentences (line structure kept)."""
+    out = re.sub(r"\s*\[(?:citation(?: needed)?|ref|reference|source|cite|insert\s+citation)\]", "", out, flags=re.IGNORECASE)
+    src_cites = set(re.findall(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]", src))
+    for c in set(re.findall(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]", out)):
+        if c not in src_cites:
             out = out.replace(c, "")
-
-    # 3. URL fidelity: if src has no URLs, reject any fabricated URLs
-    src_urls = set(re.findall(r"https?://\S+|www\.\S+", src))
-    if not src_urls:
-        out = re.sub(r"\(?\b(?:https?://|www\.)[^\s()]+(?:\([^\s()]+\)[^\s()]*)*\)?", "", out)
-
-    # 4. Remove consecutive duplicated sentences
-    sents = [s.strip() for s in re.split(r"(?<=[.!?])\s+", out) if s.strip()]
-    deduped = []
-    for s in sents:
-        if not deduped or s.lower() != deduped[-1].lower():
-            deduped.append(s)
-    out = " ".join(deduped)
-
-    # 5. Clean whitespace & punctuation
-    out = re.sub(r"\s+([,.;:])", r"\1", out)
-    out = re.sub(r"[ \t]{2,}", " ", out)
-    return out.strip()
+    if not re.search(r"https?://|www\.", src):
+        out = re.sub(r"\(?\b(?:https?://|www\.)[^\s()]+\)?", "", out)
+    fixed_lines = []
+    for line in out.split("\n"):
+        sents = split_sentences(line)
+        dedup: list[str] = []
+        for s in sents:
+            if not dedup or s.lower() != dedup[-1].lower():
+                dedup.append(s)
+        fixed_lines.append(" ".join(dedup) if sents else line)
+    out = "\n".join(fixed_lines)
+    out = re.sub(r"[ \t]+([,.;:])", r"\1", out)
+    return re.sub(r"[ \t]{2,}", " ", out).strip()
 
 
 def _break_ai_syntactic_patterns(text: str) -> str:
-    """Break the #1 AI tell that GPTZero/ZeroGPT detect: trailing participial chains and swollen sentences."""
+    """Split trailing participial chains (', thereby enabling X' -> '. This enables X')."""
     if not text:
         return ""
-
-    # 1. Break trailing participial chains into active main clauses using proper verb inflection
-    def _sub_thereby(m: re.Match) -> str:
-        verb_ing = m.group(1) + "ing"
-        verb_3sg = _inflect_ing_to_3sg(verb_ing)
-        return f". This {verb_3sg}"
-
-    text = re.sub(r"(?:,\s*|\s*,?\s*and\s+)(?:thereby|thus)\s+(\w+)ing\b", _sub_thereby, text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*leading to\b", r". This leads to", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*prompting\b", r". This prompts", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*fostering\b", r" and fosters", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*producing\b", r". This produces", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*ensuring that\b", r". This ensures that", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*refining\b", r" and refines", text, flags=re.IGNORECASE)
-    text = re.sub(r",\s*encompassing\b", r", including", text, flags=re.IGNORECASE)
-
-    # 2. Fix specific swollen AI academic phrases
-    text = re.sub(r"\bbears? the designation of\b", "is called", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bfrom the earliest moments of human emergence\b", "Since early history", text, flags=re.IGNORECASE)
-    text = re.sub(r"\ba constantly evolving array of external variables\b", "changing surroundings", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bwithin human experience\b", "", text, flags=re.IGNORECASE)
-    text = re.sub(r"\bcumulative advancements across disciplines\b", "steady scientific progress", text, flags=re.IGNORECASE)
-    text = re.sub(r"\binterdisciplinary collaboration\b", "collaborative research", text, flags=re.IGNORECASE)
-
-    # Clean punctuation & double spaces
+    text = re.sub(r"(?:,\s*|\s+and\s+)(?:thereby|thus)\s+(\w+ing)\b",
+                  lambda m: f". This {ing_to_3sg(m.group(1))}", text, flags=re.IGNORECASE)
+    text = re.sub(r",\s*leading to\b", ". This leads to", text, flags=re.IGNORECASE)
+    text = re.sub(r",\s*resulting in\b", ". This results in", text, flags=re.IGNORECASE)
     text = re.sub(r"\s+([,.;:])", r"\1", text)
-    text = re.sub(r"\.{2,}", ".", text)
-    text = re.sub(r"[ \t]{2,}", " ", text)
-    return text.strip()
+    return re.sub(r"[ \t]{2,}", " ", text).strip()
 
 
-def _clean_rewrite(src: str, out: str) -> str:
+def _inflect_ing_to_3sg(verb_ing: str) -> str:  # backwards compatibility
+    return ing_to_3sg(verb_ing)
+
+
+def _clean_rewrite(src: str, out: str, cfg: Optional[HumanizerConfig] = None) -> str:
     out = _strip_wrappers(out)
     if not out:
         return ""
-    out = _deslang(out)
-    out = _strip_ai_tells(out)
-    out = _break_ai_syntactic_patterns(out)
-    return _guard_fidelity(src, out)
+    out = _fix_encoding(out)
+    out = _guard_fidelity(src, out)
+    return polish(out, cfg) if out else ""
 
 
+# ---------------------------------------------------------------------------
+# Fidelity checks
+# ---------------------------------------------------------------------------
+_NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)*(?![\w])")
+_PLACEHOLDER = re.compile(r"__(?:RUN_LOCKED|RUN_PLACEHOLDER|LOCK_[A-Z_]+)_\d+__")
+_TAG_OPEN = re.compile(r"<(bi|b|i|u)\s+id=['\"](\d+)['\"]>", re.IGNORECASE)
+_CITE = re.compile(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]|\([A-Z][A-Za-z'’\-]+(?: et al\.?)?,? (?:19|20)\d{2}[a-z]?\)")
+
+
+def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *, short: bool = False) -> tuple[bool, str]:
+    """Return (ok, reason). Every number, citation, placeholder and tag in `src` must survive."""
+    if not cand or not cand.strip():
+        return False, "empty"
+    if _is_thinking_trace(cand):
+        return False, "reasoning trace"
+    if set(_PLACEHOLDER.findall(src)) - set(_PLACEHOLDER.findall(cand)):
+        return False, "placeholder dropped"
+    if {m.groups() for m in _TAG_OPEN.finditer(src)} - {m.groups() for m in _TAG_OPEN.finditer(cand)}:
+        return False, "formatting tag dropped"
+    if set(_CITE.findall(src)) - set(_CITE.findall(cand)):
+        return False, "citation dropped"
+    src_nums = {n.replace(",", "") for n in _NUM.findall(src)}
+    cand_nums = {n.replace(",", "") for n in _NUM.findall(cand)}
+    if src_nums - cand_nums:
+        return False, "number changed"
+    if not short:
+        sw, cw = len(src.split()), len(cand.split())
+        lo = cfg.min_length_ratio if cfg else 0.75
+        hi = cfg.max_length_ratio if cfg else 1.45
+        if cw < sw * lo or cw > max(sw * hi, sw + 12):
+            return False, "length out of range"
+        if not _is_faithful(src, cand):
+            return False, "meaning drift"
+    return True, ""
+
+
+# ---------------------------------------------------------------------------
+# Prompting
+# ---------------------------------------------------------------------------
 def _avoid_block(avoid_smooth: Optional[list[str]]) -> str:
-    if not avoid_smooth:
-        return ""
-    picks = [s.strip() for s in avoid_smooth if s.strip()][:3]
+    picks = [s.strip() for s in (avoid_smooth or []) if s.strip()][:3]
     if not picks:
         return ""
-    bullets = "\n".join(f'   - "{s[:160]}"' for s in picks)
-    return (
-        "\n\nSTILL TOO PREDICTABLE (a previous attempt left these reading machine-smooth — "
-        "recast THESE hardest of all: different clause order, more specific word choices, "
-        "a sharper rhythm, while keeping every fact identical):\n" + bullets
-    )
+    bullets = "\n".join(f'  - "{s[:180]}"' for s in picks)
+    return ("\n\nThe previous attempt still sounded machine-written in these sentences. Recast them hardest "
+            "(different clause order, more specific words, different length) while keeping every fact:\n" + bullets)
 
 
-def build_stealth_prompt(
-    text: str,
-    persona: str,
-    is_short: bool,
-    avoid_smooth: Optional[list[str]] = None,
-    scientific: bool = False,
-) -> str:
+def build_stealth_prompt(text: str, persona: str, is_short: bool, avoid_smooth: Optional[list[str]] = None,
+                         scientific: bool = False) -> str:
+    keep = ("Keep exactly: every fact, claim, number, unit, name, date, quotation, technical term, citation "
+            "such as [3] or (Smith, 2020), URL, and every placeholder such as __RUN_LOCKED_0__ or __LOCK_QTY_1__. "
+            "Keep tags like <b id='2'>…</b> around the same words. Add no new facts, examples, sources or URLs, and remove no information.")
     if is_short:
-        return (
-            f"Rewrite this short line (a title or heading) as {persona} would phrase it: "
-            f"{'formal and precise' if scientific else 'plain, direct, no hype'}. Keep every "
-            f"fact, name, number, and any bracketed reference markers exactly. Add nothing "
-            f"that isn't there. Keep it about the same length. Avoid these words: {_BANNED_WORDS}. "
-            f"Preserve any tags like <b id='X'>...</b> or __RUN_LOCKED_X__ exactly. "
-            f"CRITICAL: Output ONLY the final rewritten line. Do NOT output any thinking, notes, or preamble.\n\nLINE:\n{text}"
-        )
-    if scientific:
-        register = (
-            "4. Formal academic register: NO contractions, no casual asides, no slang. "
-            "Use exact domain terminology and keep specialized nouns intact. Use active subject-verb constructions "
-            "('humans study', 'researchers test', 'substances transform') rather than heavy passive nominalizations "
-            "('systematic inquiry was conducted', 'bears the designation of', 'the systematization of accrued findings'). "
-            "Keep any inline tags such as <b id='X'>...</b> or <i id='Y'>...</i> around the corresponding terms."
-        )
-        length_line = (
-            "1. SENTENCE BURSTINESS & RHYTHM (CRITICAL): Vary sentence lengths widely to achieve high burstiness. "
-            "Alternate short, punchy statements (5-9 words) with longer analytical explanations (20-30 words). "
-            "Never make consecutive sentences uniform in length."
-        )
-        anti_chain = (
-            "5. NO PARTICIPIAL CHAINS: Do NOT end sentences with participial tails like ', leading to...', ', thereby enabling...', "
-            "', prompting...', ', producing...', or ', fostering...'. Use active main clauses and standard coordinating conjunctions ('and', 'yet', 'because', 'so') instead."
-        )
-        closing = "Keep the SAME meaning and concise length, formal and scientific without padding"
-    else:
-        register = "4. Contractions and active voice, professional register. No slang or hype. Keep any inline tags."
-        length_line = "1. SENTENCE BURSTINESS & RHYTHM (CRITICAL): Alternate very short punchy sentences (4-8 words) with longer compound sentences (20-32 words). Vary rhythm naturally."
-        anti_chain = "5. Avoid participial dangling clauses."
-        closing = "Same length and meaning"
+        return (f"Rewrite this short line as {persona} would, plainly and without hype. {keep} "
+                f"Keep it about the same length. Avoid: {_BANNED_WORDS}.\n"
+                "Return only the rewritten line.\n\nLINE:\n" + text)
+    register = ("Formal academic register: no contractions, no slang, no rhetorical questions. Prefer active verbs "
+                "('we measured', 'the catalyst lowers') over heavy nominalisations. Keep domain terminology exactly."
+                if scientific else
+                "Natural professional register: contractions are fine, active voice, no slang, no hype.")
+    return f"""Rewrite the TEXT so it reads as if {persona} wrote it by hand.
 
-    voice = f"Rewrite the TEXT as if {persona} wrote it by hand — genuinely human, which completely defeats AI detectors like GPTZero and ZeroGPT."
+{keep}
 
-    return f"""{voice}
+Style rules:
+- Vary sentence length a lot: mix short sentences (4-9 words) with longer ones (20-32 words). Never write three sentences of similar length in a row.
+- Vary how sentences begin. Do not open sentences with Furthermore, Moreover, Additionally, Notably, Ultimately or In conclusion.
+- Use plain, specific words. Say "is", "are" or "has" instead of "serves as", "stands as" or "boasts".
+- No em dashes. No "not only ... but also". No ", highlighting/underscoring/fostering ..." tails. Do not add lists of three.
+- Never use these words: {_BANNED_WORDS}.
+- Never use these phrases: {_BANNED_PHRASES}.
+- {register}
+- Keep roughly the same length (within 15%) and the same line breaks.{_avoid_block(avoid_smooth)}
 
-FACTS (non-negotiable): keep every claim, number, name, date, equation, URL, and bracketed citation EXACTLY. Introduce NO new facts, studies, surveys, equations, URLs, or claims not in the TEXT. NEVER output placeholder tokens like '[citation]' or '[ref]'. Keep all technical terms precise. Preserve any tags of the form <b id='...'>...</b>, <i id='...'>...</i>, or __RUN_LOCKED_...__ intact.
+Return only the rewritten text: no preamble, notes, quotes or markdown fences.
 
-HOW:
-{length_line}
-2. Vary sentence openings; avoid starting consecutive sentences with 'The', 'This', or 'It is'.
-3. Plain, precise vocabulary. Never use: {_BANNED_WORDS}. Avoid stock phrases: {_BANNED_PHRASES}.
-{register}
-{anti_chain}{_avoid_block(avoid_smooth)}
-
-CRITICAL OUTPUT RULES:
-- Return ONLY the final rewritten text, one space between sentences.
-- Do NOT output any thinking steps, chain-of-thought, reasoning tags, internal analysis, or preambles.
-- Do NOT wrap output in markdown code blocks or quotes.
-
-{closing}. TEXT:
+TEXT:
 {text}"""
 
 
-def _smooth_hints(variant: str, max_hints: int = 3) -> list[str]:
-    try:
-        smooth = smooth_sentences(variant, threshold=33.0)
-        return [s for _, s, _ in smooth[:max_hints]]
-    except Exception:
-        return []
-
-
-def _roughen_smooth_sentences(text: str, cfg: HumanizerConfig) -> str:
-    """Refines sentences that remain statistically smooth with strict validation."""
-    try:
-        smooth = smooth_sentences(text, threshold=33.0)
-        if not smooth:
-            return text
-        sents = split_sentences(text)
-        if not sents:
-            return text
-        personas = _SCI_PERSONAS if cfg.scientific else _PERSONAS
-        changed = False
-
-        for idx, sent, ppl in smooth[:3]:
-            if idx >= len(sents):
-                continue
-            persona = cfg.rng.choice(personas)
-            prev_ctx = sents[idx - 1] if idx > 0 else ""
-            next_ctx = sents[idx + 1] if idx + 1 < len(sents) else ""
-            ctx_note = f"Context: Preceded by '{prev_ctx[:80]}...' and followed by '{next_ctx[:80]}...'\n" if prev_ctx or next_ctx else ""
-
-            prompt = (
-                f"Rewrite this single sentence to sound genuinely human and unpredictable while keeping identical meaning.\n"
-                f"Voice/Style: {persona} ({'formal academic' if cfg.scientific else 'direct and professional'}).\n"
-                f"{ctx_note}"
-                f"RULES:\n"
-                f"1. Output strictly ONE single sentence ending in a period.\n"
-                f"2. Keep EVERY fact, number, citation marker, and technical term exactly.\n"
-                f"3. Do NOT output any thinking, analysis, reasoning steps, or conversational preamble.\n"
-                f"4. Return ONLY the rewritten sentence.\n\n"
-                f"SENTENCE:\n{sent}"
-            )
-            try:
-                raw = call_llm_pool(prompt, cfg, temperature=1.0)
-                cand = _clean_rewrite(sent, raw)
-                if not cand or cand == sent:
-                    continue
-
-                # Safety checks on candidate sentence:
-                if _is_thinking_trace(cand):
-                    continue
-
-                cand_sents = split_sentences(cand)
-                if len(cand_sents) > 1:
-                    cand = cand_sents[0].strip()
-
-                w_orig = len(sent.split())
-                w_cand = len(cand.split())
-                # Discard if length exploded or collapsed unreasonably
-                if w_cand < max(3, int(w_orig * 0.45)) or w_cand > max(35, int(w_orig * 1.85)):
-                    continue
-
-                # Discard if citation or lock fidelity violated
-                src_cites = set(re.findall(r"\[[a-zA-Z0-9,\-\s]{1,30}\]", sent))
-                cand_cites = set(re.findall(r"\[[a-zA-Z0-9,\-\s]{1,30}\]", cand))
-                if src_cites != cand_cites:
-                    continue
-
-                src_locks = set(re.findall(r"__(?:LOCK|RUN)_[A-Z0-9_]+__", sent))
-                cand_locks = set(re.findall(r"__(?:LOCK|RUN)_[A-Z0-9_]+__", cand))
-                if src_locks != cand_locks:
-                    continue
-
-                sents[idx] = cand
-                changed = True
-            except Exception:
-                continue
-
-        return " ".join(sents) if changed else text
-    except Exception:
-        return text
-
-
-def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
-    """Persona-driven LLM rewrite with acceptance loop and guided feedback."""
-    # Repair broken unicode before any processing
-    text = _fix_encoding(text)
-    stripped = text.strip()
-    if not stripped:
-        return text
-
-    is_short = len(stripped.split()) < 15
-    budget = 1 if cfg.stealth_level <= 1 or is_short else max(1, cfg.retry_budget)
-    personas = _SCI_PERSONAS if cfg.scientific else _PERSONAS
-    persona_i = cfg.rng.randrange(len(personas))
-
-    best_text = text
-    best_score = 100.0
-    hints: list[str] = []
-
-    for attempt in range(budget):
-        if cfg.cancel_event and cfg.cancel_event.is_set():
-            break
-        persona = personas[(persona_i + attempt) % len(personas)]
-        temp = min(1.20, cfg.gemini_temperature + 0.05 * attempt)
-        prompt = build_stealth_prompt(text, persona, is_short, avoid_smooth=hints, scientific=cfg.scientific)
-
-        try:
-            raw = call_llm_pool(prompt, cfg, temp)
-            cand = _clean_rewrite(text, raw)
-        except Exception as e:
-            logger.warning(f"Stealth rewrite call failed: {e}")
-            continue
-
-        if not cand or _is_thinking_trace(cand):
-            continue
-
-        # Length guard: do not accept extreme shrinkage or massive inflation
-        cand_words = len(cand.split())
-        text_words = len(text.split())
-        if not is_short:
-            if cand_words < int(cfg.min_length_ratio * text_words) or cand_words > int(1.55 * text_words):
-                continue
-
-        # Semantic fidelity guard: reject rewrites that lost/distorted content
-        if not is_short and not _is_faithful(text, cand):
-            logger.debug("Candidate rejected by fidelity guard (content drift).")
-            continue
-
-        if budget == 1:
-            return cand
-
-        # Score candidate
-        res = score_text(cand)
-        score = res.get("ai_score", 100.0)
-
-        if score < best_score:
-            best_score = score
-            best_text = cand
-
-        if best_score <= cfg.target_pct:
-            break
-
-        hints = _smooth_hints(best_text)
-
-    if not is_short and cfg.stealth_level >= 2 and best_text != text:
-        best_text = _roughen_smooth_sentences(best_text, cfg)
-
-    return best_text
+# ---------------------------------------------------------------------------
+# Paragraph rewriting
+# ---------------------------------------------------------------------------
+def resolve_engine(cfg: HumanizerConfig) -> str:
+    """'llm' when the LLM pool is requested and configured, else 'rules'."""
+    return "llm" if cfg.use_gemini and has_providers() else "rules"
 
 
 def humanize_paragraph_rules(text: str, cfg: HumanizerConfig) -> str:
-    """Fast offline rule pipeline."""
-    # Repair broken unicode before any processing
+    """Offline rule pipeline for one paragraph."""
     text = _fix_encoding(text)
     if not text.strip():
         return text
-    text, vault = lock_elements(text)
-    text = apply_phrase_subs(text, cfg)
-    text = apply_word_subs(text, cfg)
-    text = apply_contractions(text, cfg)
-    text = fix_grammar(text)
-    text = unlock_elements(text, vault)
-    return text
+    cfg.count("rules")
+    return rewrite(text, cfg)
+
+
+def _roughen_smooth_sentences(text: str, cfg: HumanizerConfig) -> str:
+    """Re-roll up to three sentences that still read as machine-written."""
+    flagged = smooth_sentences(text, threshold=55.0)[:3]
+    if not flagged:
+        return text
+    sents = split_sentences(text)
+    personas = _SCI_PERSONAS if cfg.scientific else _PERSONAS
+    changed = False
+    for idx, sent, _ in flagged:
+        if cfg.cancelled or idx >= len(sents):
+            break
+        prev_ctx = sents[idx - 1] if idx > 0 else ""
+        next_ctx = sents[idx + 1] if idx + 1 < len(sents) else ""
+        prompt = (
+            f"Rewrite this one sentence so it sounds like {cfg.rng.choice(personas)} wrote it. Same meaning, "
+            f"{'formal academic register' if cfg.scientific else 'plain professional register'}.\n"
+            f"Keep every number, citation, term and placeholder exactly. Avoid: {_BANNED_WORDS}.\n"
+            + (f"Previous sentence: {prev_ctx[:200]}\n" if prev_ctx else "")
+            + (f"Next sentence: {next_ctx[:200]}\n" if next_ctx else "")
+            + f"Return only the rewritten sentence.\n\nSENTENCE:\n{sent}"
+        )
+        try:
+            cand = _clean_rewrite(sent, call_llm_pool(prompt, cfg, temperature=1.0), cfg)
+        except Exception as e:
+            logger.debug("Sentence refinement failed: %s", e)
+            continue
+        cand_sents = split_sentences(cand)
+        if not cand_sents:
+            continue
+        cand = " ".join(cand_sents[:2])
+        ok, _ = check_fidelity(sent, cand, cfg, short=True)
+        sw, cw = len(sent.split()), len(cand.split())
+        if ok and cand != sent and max(3, sw * 0.5) <= cw <= max(35, sw * 1.8):
+            sents[idx] = cand
+            changed = True
+    return " ".join(sents) if changed else text
+
+
+def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
+    """LLM rewrite with best-of-N selection, fidelity gates and an offline fallback."""
+    text = _fix_encoding(text)
+    if not text.strip():
+        return text
+    n_words = len(text.split())
+    is_short = n_words < 15
+    budget = 1 if cfg.stealth_level <= 1 or is_short else cfg.retry_budget
+    personas = _SCI_PERSONAS if cfg.scientific else _PERSONAS
+    start = cfg.rng.randrange(len(personas))
+
+    best_text: Optional[str] = None
+    best_score = 101.0
+    hints: list[str] = []
+    for attempt in range(budget):
+        if cfg.cancelled:
+            break
+        persona = personas[(start + attempt) % len(personas)]
+        temp = min(1.2, cfg.gemini_temperature + 0.08 * attempt)
+        prompt = build_stealth_prompt(text, persona, is_short, avoid_smooth=hints, scientific=cfg.scientific)
+        try:
+            raw = call_llm_pool(prompt, cfg, temp)
+        except Exception as e:
+            logger.warning("LLM rewrite failed: %s", e)
+            if "No LLM providers" in str(e) or "cooling down" in str(e) or "All LLM providers failed" in str(e):
+                break
+            continue
+        cand = _clean_rewrite(text, raw, cfg)
+        ok, reason = check_fidelity(text, cand, cfg, short=is_short)
+        if not ok:
+            logger.debug("Candidate rejected: %s", reason)
+            continue
+        if budget == 1:
+            best_text = cand
+            break
+        score = score_text(cand).get("ai_score", 100.0)
+        if score < best_score:
+            best_score, best_text = score, cand
+        if best_score <= cfg.target_pct:
+            break
+        hints = [s for _, s, _ in smooth_sentences(best_text, threshold=55.0)[:3]]
+
+    if best_text is None:
+        cfg.status("LLM unavailable for this paragraph — using offline rules.")
+        cfg.count("rules")
+        return rewrite(text, cfg)
+    cfg.count("llm")
+    if not is_short and cfg.stealth_level >= 3 and not cfg.cancelled:
+        best_text = _roughen_smooth_sentences(best_text, cfg)
+    return best_text
+
+
+def _rewrite_unit(text: str, cfg: HumanizerConfig, engine: str) -> str:
+    if len(re.findall(r"[A-Za-z]{2,}", text)) < MIN_WORDS_TO_REWRITE:
+        return text
+    if engine == "llm":
+        return humanize_paragraph_stealth(text, cfg)
+    return humanize_paragraph_rules(text, cfg)
+
+
+# ---------------------------------------------------------------------------
+# Plain text / Markdown
+# ---------------------------------------------------------------------------
+_LINE_PREFIX = re.compile(r"^(\s*(?:#{1,6}\s+|[-*+•]\s+|\d+[.)]\s+|>\s*|\[[ xX]\]\s+)*)")
+_FENCE = re.compile(r"^\s*(```|~~~)")
+
+
+def _segment(text: str) -> list[tuple[str, str, str, bool]]:
+    """Split text into (prefix, body, suffix, rewrite?) units that preserve layout.
+
+    Hard-wrapped prose (e.g. pasted from a PDF) is re-joined into one paragraph;
+    Markdown headings, bullets, quotes and code fences keep their markers.
+    """
+    units: list[tuple[str, str, str, bool]] = []
+    block: list[tuple[str, str]] = []  # (line, terminator)
+
+    def flush() -> None:
+        if not block:
+            return
+        lines = [ln for ln, _ in block]
+        structured = any(_LINE_PREFIX.match(ln).group(1).strip() for ln in lines)
+        avg = sum(len(ln) for ln in lines) / len(lines)
+        unterminated = sum(1 for ln in lines[:-1] if not ln.rstrip().endswith((".", "!", "?", ":", ";")))
+        hard_wrapped = len(lines) > 1 and not structured and avg > 45 and unterminated >= (len(lines) - 1) / 2
+        if hard_wrapped:
+            lead = lines[0][: len(lines[0]) - len(lines[0].lstrip())]
+            units.append((lead, " ".join(ln.strip() for ln in lines), block[-1][1], True))
+        else:
+            for ln, term in block:
+                prefix = _LINE_PREFIX.match(ln).group(1)
+                body = ln[len(prefix):]
+                trail = body[len(body.rstrip()):]
+                units.append((prefix, body.rstrip(), trail + term, True))
+        block.clear()
+
+    in_fence = False
+    raw_lines = text.split("\n")
+    for i, line in enumerate(raw_lines):
+        term = "\n" if i < len(raw_lines) - 1 else ""
+        if _FENCE.match(line):
+            flush()
+            in_fence = not in_fence
+            units.append(("", line + term, "", False))
+        elif in_fence or not line.strip():
+            flush()
+            units.append(("", line + term, "", False))
+        else:
+            block.append((line, term))
+    flush()
+    return units
+
+
+def _join(units: list[tuple[str, str, str, bool]]) -> str:
+    return "".join(p + b + s for p, b, s, _ in units)
 
 
 def humanize_text(text: str, cfg: HumanizerConfig) -> str:
-    """Humanize a multi-paragraph text block with live progress reporting."""
-    blocks = text.split("\n\n")
-    non_empty_indices = [i for i, b in enumerate(blocks) if b.strip()]
-    if not non_empty_indices:
+    """Humanize multi-paragraph text (Markdown-aware) with progress reporting and resume support."""
+    if not text or not text.strip():
+        return text
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+    units = _segment(text)
+    todo = [i for i, u in enumerate(units) if u[3] and len(re.findall(r"[A-Za-z]{2,}", u[1])) >= MIN_WORDS_TO_REWRITE]
+    total = len(todo)
+    engine = resolve_engine(cfg)
+    cfg.status("Using LLM provider pool" if engine == "llm" else "Using offline rule engine (no API key configured)")
+    if total == 0:
+        cfg.report_progress(1, 1, "Nothing to rewrite")
         return text
 
-    total_paras = len(non_empty_indices)
-    cfg.report_progress(0, total_paras, "Starting text humanization...")
+    cfg.report_progress(0, total, "Starting…")
+    ckpt = Checkpoint(Checkpoint.compute_id(text, {**cfg.to_dict(), "engine": engine}), text, cfg.to_dict(), total=total, mode="text")
+    results: dict[int, str] = {}
 
-    sid = Checkpoint.compute_id(text, cfg.to_dict())
-    ckpt = Checkpoint(sid, text, cfg.to_dict(), total=total_paras, mode="text")
-
-    new_blocks = list(blocks)
-    workers = max(1, min(cfg.parallel_workers, total_paras))
-
-    def _work(idx: int) -> tuple[int, str]:
-        if cfg.cancel_event and cfg.cancel_event.is_set():
-            return idx, blocks[idx]
-        cached = ckpt.get(idx)
+    def work(i: int) -> tuple[int, str]:
+        cached = ckpt.get(i)
         if cached is not None:
-            return idx, cached
-        b = blocks[idx]
-        if cfg.use_gemini:
-            res = humanize_paragraph_stealth(b, cfg)
-        else:
-            res = humanize_paragraph_rules(b, cfg)
-        ckpt.put(idx, res)
-        return idx, res
+            return i, cached
+        if cfg.cancelled:
+            return i, units[i][1]
+        try:
+            res = _rewrite_unit(units[i][1], cfg, engine)
+        except Exception as e:  # never lose a paragraph to an unexpected error
+            logger.exception("Paragraph %d failed: %s", i, e)
+            res = units[i][1]
+        if not cfg.cancelled:
+            ckpt.put(i, res)
+        return i, res
 
-    done_count = 0
+    done = 0
+    workers = 1 if engine == "rules" else max(1, min(cfg.parallel_workers, total))
     if workers == 1:
-        for idx in non_empty_indices:
-            if cfg.cancel_event and cfg.cancel_event.is_set():
+        for i in todo:
+            if cfg.cancelled:
                 break
-            _, new_blocks[idx] = _work(idx)
-            done_count += 1
-            cfg.report_progress(done_count, total_paras, f"Paragraph {done_count}/{total_paras} humanized")
+            _, results[i] = work(i)
+            done += 1
+            cfg.report_progress(done, total, f"Paragraph {done}/{total}")
     else:
         with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(_work, idx): idx for idx in non_empty_indices}
-            for fut in cf.as_completed(futures):
-                if cfg.cancel_event and cfg.cancel_event.is_set():
-                    for f in futures:
+            futs = [ex.submit(work, i) for i in todo]
+            for fut in cf.as_completed(futs):
+                i, res = fut.result()
+                results[i] = res
+                done += 1
+                cfg.report_progress(done, total, f"Paragraph {done}/{total}")
+                if cfg.cancelled:
+                    for f in futs:
                         f.cancel()
                     break
-                idx, rewritten = fut.result()
-                new_blocks[idx] = rewritten
-                done_count += 1
-                cfg.report_progress(done_count, total_paras, f"Paragraph {done_count}/{total_paras} humanized")
 
-    if not (cfg.cancel_event and cfg.cancel_event.is_set()):
+    new_units = [(p, results.get(i, b), s, r) for i, (p, b, s, r) in enumerate(units)]
+    if not cfg.cancelled:
         ckpt.clear()
-        cfg.report_progress(total_paras, total_paras, "Text humanization complete")
+        cfg.report_progress(total, total, "Done")
+    return _join(new_units)
 
-    return "\n\n".join(new_blocks)
 
-
+# ---------------------------------------------------------------------------
+# DOCX
+# ---------------------------------------------------------------------------
 def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -> Path:
-    """Humanize a Word Document preserving run-level formatting with parallel execution & progress reporting."""
-    doc = Document(str(src))
-    target_dst = dst or src.with_name(f"{src.stem}_humanized{src.suffix}")
+    """Humanize a Word document in place (formatting, fields, links and citations preserved)."""
+    src = Path(src)
+    doc = docx.Document(str(src))
+    target = Path(dst) if dst else src.with_name(f"{src.stem}_humanized{src.suffix}")
+    paras = select_paragraphs(doc)
+    tagged: list[tuple[str, dict]] = [_tag_runs(p) for p in paras]
+    todo = [i for i, (t, _) in enumerate(tagged) if len(re.findall(r"[A-Za-z]{2,}", t)) >= MIN_WORDS_TO_REWRITE]
+    total = len(todo)
+    engine = resolve_engine(cfg)
+    cfg.status("Using LLM provider pool" if engine == "llm" else "Using offline rule engine (no API key configured)")
+    if total == 0:
+        doc.save(str(target))
+        cfg.report_progress(1, 1, "Nothing to rewrite")
+        return target
 
-    paras_to_process = []
-    for p in iter_document_paragraphs(doc):
-        if not should_skip_paragraph(p):
-            paras_to_process.append(p)
+    key_text = "\n\n".join(t for t, _ in tagged)
+    ckpt = Checkpoint(Checkpoint.compute_id(key_text, {**cfg.to_dict(), "engine": engine}), key_text, cfg.to_dict(),
+                      total=total, mode="docx", source_path=str(src))
+    cfg.report_progress(0, total, "Starting…")
+    results: dict[int, str] = {}
 
-    if not paras_to_process:
-        doc.save(str(target_dst))
-        cfg.report_progress(1, 1, "Document empty or skipped, saved directly.")
-        return target_dst
-
-    total_paras = len(paras_to_process)
-    cfg.report_progress(0, total_paras, "Preparing document runs...")
-
-    # Build checkpoint key based on document paragraphs
-    doc_hash_text = "\n\n".join(p.text for p in paras_to_process)
-    sid = Checkpoint.compute_id(doc_hash_text, cfg.to_dict())
-    ckpt = Checkpoint(sid, doc_hash_text, cfg.to_dict(), total=total_paras, mode="docx", source_path=str(src))
-
-    workers = max(1, min(cfg.parallel_workers, total_paras))
-
-    # Store vaults keyed by paragraph index so reconstruction uses the
-    # same tag→style mapping that was produced during the forward pass.
-    vault_map: dict[int, dict] = {}
-    vault_lock = threading.Lock()
-
-    def _process_para(idx: int) -> tuple[int, str]:
-        if cfg.cancel_event and cfg.cancel_event.is_set():
-            return idx, paras_to_process[idx].text
-        cached = ckpt.get(idx)
-        p = paras_to_process[idx]
-        tagged_text, vault = _tag_runs(p)
-        with vault_lock:
-            vault_map[idx] = vault
+    def work(i: int) -> tuple[int, str]:
+        cached = ckpt.get(i)
         if cached is not None:
-            return idx, cached
-        if not tagged_text.strip():
-            return idx, p.text
+            return i, cached
+        t = tagged[i][0]
+        if cfg.cancelled:
+            return i, t
+        try:
+            res = _rewrite_unit(t, cfg, engine)
+        except Exception as e:
+            logger.exception("DOCX paragraph %d failed: %s", i, e)
+            res = t
+        if not cfg.cancelled:
+            ckpt.put(i, res)
+        return i, res
 
-        if cfg.use_gemini:
-            rewritten = humanize_paragraph_stealth(tagged_text, cfg)
-        else:
-            rewritten = humanize_paragraph_rules(tagged_text, cfg)
-
-        ckpt.put(idx, rewritten)
-        return idx, rewritten
-
-    results_map: dict[int, str] = {}
-    done_count = 0
-    if workers == 1:
-        for idx in range(total_paras):
-            if cfg.cancel_event and cfg.cancel_event.is_set():
+    done = 0
+    workers = 1 if engine == "rules" else max(1, min(cfg.parallel_workers, total))
+    with cf.ThreadPoolExecutor(max_workers=workers) as ex:
+        futs = [ex.submit(work, i) for i in todo]
+        for fut in cf.as_completed(futs):
+            i, res = fut.result()
+            results[i] = res
+            done += 1
+            cfg.report_progress(done, total, f"Paragraph {done}/{total}")
+            if cfg.cancelled:
+                for f in futs:
+                    f.cancel()
                 break
-            _, res_txt = _process_para(idx)
-            results_map[idx] = res_txt
-            done_count += 1
-            cfg.report_progress(done_count, total_paras, f"DOCX paragraph {done_count}/{total_paras} humanized")
-    else:
-        with cf.ThreadPoolExecutor(max_workers=workers) as ex:
-            futures = {ex.submit(_process_para, idx): idx for idx in range(total_paras)}
-            for fut in cf.as_completed(futures):
-                if cfg.cancel_event and cfg.cancel_event.is_set():
-                    for f in futures:
-                        f.cancel()
-                    break
-                idx, rewritten = fut.result()
-                results_map[idx] = rewritten
-                done_count += 1
-                cfg.report_progress(done_count, total_paras, f"DOCX paragraph {done_count}/{total_paras} humanized")
 
-    # Reconstruct all paragraphs in order using the vaults captured during the
-    # forward pass — NOT a second _tag_runs call on (now-modified) paragraphs.
-    cfg.report_progress(total_paras, total_paras, "Reconstructing run-level styles and formatting...")
-    for idx, p in enumerate(paras_to_process):
-        if idx in results_map:
-            base_style = _extract_run_style(p.runs[0]) if p.runs else RunStyle()
-            vault = vault_map.get(idx, {})
-            _reconstruct_runs(p, results_map[idx], vault, base_style)
-
-    if not (cfg.cancel_event and cfg.cancel_event.is_set()):
+    cfg.report_progress(done, total, "Rebuilding document formatting…")
+    for i, res in results.items():
+        if res != tagged[i][0]:
+            _reconstruct_runs(paras[i], res, tagged[i][1])
+    if not cfg.cancelled:
         ckpt.clear()
-        cfg.report_progress(total_paras, total_paras, "DOCX humanization complete")
+        cfg.report_progress(total, total, "Done")
+    doc.save(str(target))
+    return target
 
-    doc.save(str(target_dst))
-    return target_dst
+
+__all__ = [
+    "humanize_text", "humanize_docx", "humanize_paragraph_stealth", "humanize_paragraph_rules",
+    "build_stealth_prompt", "check_fidelity", "resolve_engine",
+]

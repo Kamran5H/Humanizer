@@ -3,7 +3,7 @@ Real-detector verification harness.
 
 Submits text to third-party AI detectors and reads the actual AI percentage, so
 the humanizer's "<=5%" claim is verified against the same scorers a grader uses —
-not only the offline gauge in ai_detector.py.
+not only the offline gauge in humanizer/detector.py.
 
 Backends, by preference:
   • ZeroGPT   — free public endpoint, no key. Rate-limited per IP (a handful of
@@ -12,7 +12,7 @@ Backends, by preference:
   • Sapling   — needs SAPLING_API_KEY    (free tier available)
   • GPTZero   — needs GPTZERO_API_KEY
   • Originality — needs ORIGINALITY_API_KEY (paid)
-  • local     — ai_detector.py offline gauge, always available, never blocks.
+  • local     — humanizer.detector offline gauge, always available, never blocks.
 
 Keys are read from .keys.env (KEY=VALUE per line) or the environment.
 
@@ -40,6 +40,8 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable, Optional
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
 TARGET_PCT = 5.0
 _KEYS_LOADED = False
 
@@ -48,8 +50,8 @@ def load_keys() -> None:
     global _KEYS_LOADED
     if _KEYS_LOADED:
         return
-    for p in (Path(__file__).parent / ".keys.env",
-              Path(__file__).parent.parent / ".keys.env",
+    for p in (Path(__file__).parent.parent / ".keys.env",
+              Path(__file__).parent.parent / ".env",
               Path.cwd() / ".keys.env"):
         if p.exists():
             try:
@@ -190,14 +192,14 @@ _LOCAL_TRIED = False
 
 
 def score_local(text: str) -> DetectorResult:
-    """Offline gauge from ai_detector.py — always available, used to gate re-rolls."""
+    """Offline gauge from humanizer.detector — always available, used to gate re-rolls."""
     global _LOCAL, _LOCAL_TRIED
     name = "local-gauge"
     if not _LOCAL_TRIED:
         _LOCAL_TRIED = True
         try:
-            import ai_detector
-            _LOCAL = ai_detector
+            from humanizer import detector as _det
+            _LOCAL = _det
         except Exception as e:
             _LOCAL = None
             return DetectorResult(name, None, False, f"unavailable: {type(e).__name__}")
@@ -235,7 +237,7 @@ def real_scores(results: list[DetectorResult]) -> list[float]:
 # --------------------------------------------------------------------------- #
 
 def _load_corpus() -> list[dict]:
-    p = Path(__file__).parent / "stealth_eval" / "corpus.json"
+    p = Path(__file__).parent / "corpus.json"
     return json.loads(p.read_text(encoding="utf-8"))
 
 
@@ -321,15 +323,11 @@ if __name__ == "__main__":
         _print(score_all(sample))
         sys.exit(0)
     if args[0] == "--benchmark":
-        import humanizer_pro as H
-        H.load_keys_if_needed()
+        from humanizer import HumanizerConfig, humanize_text
         limit = int(args[1]) if len(args) > 1 and args[1].isdigit() else None
-        level = 3  # ZeroGPT-gated — what actually proves <=5%
-        cfg = H.HumanizerConfig(use_gemini=True, stealth_level=level, retry_budget=3,
-                                target_pct=TARGET_PCT, gemini_temperature=1.0,
-                                double_pass=False)
-        sys.exit(benchmark(lambda t: H.humanize_paragraph_gemini_stealth(t, cfg),
-                           limit=limit))
+        offline = "--offline" in args
+        cfg = HumanizerConfig(use_gemini=not offline, stealth_level=3, retry_budget=3, target_pct=TARGET_PCT)
+        sys.exit(benchmark(lambda t: humanize_text(t, cfg), use_real=not offline, limit=limit))
     if args[0] == "--file":
         text = Path(args[1]).read_text(encoding="utf-8")
     else:

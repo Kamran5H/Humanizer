@@ -1,0 +1,56 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "humanizer-pro"
+version = "6.0.0"
+description = "Rewrite AI-sounding text into natural prose, with a local explainable AI-likelihood score and format-preserving DOCX support."
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "Kamran Ashraf" }]
+requires-python = ">=3.10"
+dependencies = [
+    "python-docx>=1.1",
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+    "python-multipart>=0.0.9",
+]
+classifiers = [
+    "Programming Language :: Python :: 3",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Topic :: Text Processing :: Linguistic",
+]
+
+[project.optional-dependencies]
+pdf = ["pypdf>=4.0"]
+quality = ["ftfy>=6.1"]
+perplexity = ["torch>=2.1", "transformers>=4.40"]
+dev = ["pytest>=8", "httpx>=0.27", "ruff>=0.5"]
+all = ["pypdf>=4.0", "ftfy>=6.1"]
+
+[project.scripts]
+humanizer = "humanizer.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/Kamran5H/Humanizer"
+
+[tool.setuptools]
+packages = ["humanizer"]
+
+[tool.setuptools.package-data]
+humanizer = ["templates/*.html"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+
+[tool.ruff]
+line-length = 140
+target-version = "py310"
+extend-exclude = ["tools/detector_harness.py"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "B", "I"]
+ignore = ["E501", "B008", "B023", "E731"]

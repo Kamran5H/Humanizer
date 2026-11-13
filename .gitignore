@@ -1,8 +1,11 @@
-# Python caches
+# Python
 __pycache__/
 *.py[cod]
-*.pyo
 .pytest_cache/
+.ruff_cache/
+*.egg-info/
+build/
+dist/
 
 # Virtual environments
 .venv/
@@ -15,14 +18,15 @@ env/
 .idea/
 *.log
 
-# Environment & Secrets
+# Secrets (never commit keys)
 .env
 .env.*
-*.env
+!.env.example
+*.keys.env
+.keys.env
 
-# Outputs & Test Artifacts
-*.docx
-*.pdf
+# Outputs & scratch
+*_humanized.*
 output/
 outputs/
 scratch/

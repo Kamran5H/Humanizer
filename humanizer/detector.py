@@ -1,271 +1,344 @@
 """
-Multi-Signal Advanced AI Detector Module.
-Measures token-level perplexity/entropy, rhythm coefficient of variation (burstiness),
-smooth sentence fraction, lexical diversity (TTR), and 150+ commercial AI stylistic signatures.
-Includes zero-dependency Shannon Entropy & Zipf Surprisal fallback when PyTorch is absent.
+Local, explainable AI-likelihood scorer.
+
+The score is an ensemble of signals that commercial detectors and the
+Wikipedia "Signs of AI writing" guide both rely on:
+
+* **Burstiness** — humans vary sentence length a lot; LLMs write evenly.
+* **AI vocabulary & stock phrases** — weighted hits from :mod:`humanizer.patterns`.
+* **Formulaic structure** — transition openers, shallow ``-ing`` tails,
+  rule-of-three lists, em-dash asides, ``not only ... but also``.
+* **Uniformity** — repeated sentence openers and a narrow mid-length band.
+* **Perplexity** (optional) — token predictability under GPT-2 when
+  ``torch`` + ``transformers`` are installed. Without them the signal is
+  skipped rather than faked, and the other weights are renormalised.
+
+Everything runs offline. Scores are an *estimate*; they are not a guarantee
+of what any third-party detector will say.
 """
 
 from __future__ import annotations
 
-import collections
 import math
 import re
+import statistics
 from functools import lru_cache
 from typing import Optional
 
-try:
-    import torch
-    from transformers import AutoModelForCausalLM, AutoTokenizer
-    _TORCH_OK = True
-except ImportError:
-    _TORCH_OK = False
+from humanizer.patterns import find_tells
+from humanizer.text import split_sentences, words
 
 _MODEL_NAME = "distilgpt2"
+_TORCH_STATE: dict[str, object] = {}
 
-# Detection tuning constants
-_PPL_MID = 28.0
-_PPL_SLOPE = 0.16
-_BUR_MID = 45.0
-_BUR_SLOPE = 0.06
-_PAT_MID = 1.6
-_PAT_SLOPE = 2.6
-_SMOOTH_PPL = 30.0
-_FRC_MID = 0.14
-_FRC_SLOPE = 22.0
+_TRANSITION_START = re.compile(
+    r"^[\"'“(]*(?:Furthermore|Moreover|Additionally|In addition|Notably|Importantly|Consequently|"
+    r"Ultimately|Indeed|Interestingly|Crucially|Overall|In conclusion|In summary|Thus|Therefore|"
+    r"Hence|However|Nevertheless|Nonetheless|Similarly|Likewise|Specifically|Essentially)\b,?"
+)
+_TAIL = re.compile(r",\s+(?:thereby\s+|thus\s+)?[a-z]+ing\b[^,.;!?]*[.!?]?$")
+_TRIAD = re.compile(r"\b[\w-]+(?: [\w-]+){0,3}, [\w-]+(?: [\w-]+){0,3},? (?:and|or) [\w-]+")
+_DASH = re.compile(r"—|\s--\s")
+_CONTRACTION = re.compile(r"\b\w+['’](?:s|t|re|ve|ll|d|m)\b", re.IGNORECASE)
 
-# Term weights in ensemble
-_W_PPL = 0.18
-_W_BUR = 0.35
-_W_FRC = 0.20
-_W_PAT = 0.27
-
-# Comprehensive 150+ Commercial AI Stylistic Tells & Discourse Patterns
-_AI_TELLS_PATTERNS = [
-    # AI buzzwords & stock verbs/adjectives
-    r"\b(?:delve|delves|delving|leverage|leverages|leveraging|harness|harnessing|harnessed)\b",
-    r"\b(?:foster|fostering|fostered|underscore|underscores|underscoring|underscored)\b",
-    r"\b(?:showcase|showcases|showcasing|showcased|transformative|revolutioniz\w+)\b",
-    r"\b(?:unprecedented|pivotal|robust|seamless|seamlessly|cutting-edge|game-?changer)\b",
-    r"\b(?:testament|tapestry|realm|landscape|nuanced|nuance|intricate|multifaceted|holistic)\b",
-    r"\b(?:paradigm|synerg\w+|streamline\w*|optimiz\w+|furthermore|moreover|notably|importantly)\b",
-    r"\b(?:consequently|ultimately|meticulous\w*|comprehensive|facilitate\w*|utilize\w*)\b",
-    r"\b(?:demonstrat\w+|navigat\w+|elevate\w*|empower\w*|spearhead\w*|catalyz\w+)\b",
-    r"\b(?:paramount|beacon|cornerstone|linchpin|bedrock|touchstone|bastion)\b",
-    r"\b(?:burgeoning|unwavering|exhaustive|rigorous|profound|astounding|stellar)\b",
-    r"\b(?:ubiquitous|pervasive|quintessential|archetypal|exemplary|invaluable)\b",
-    # Stock phrases & synthetic openers
-    r"\bin today'?s (?:fast-paced|digital|modern) world\b",
-    r"\bit is important to note\b",
-    r"\bit is worth noting\b",
-    r"\bit is worth mentioning\b",
-    r"\bit should be noted that\b",
-    r"\bit is essential to (?:recognize|understand|note)\b",
-    r"\bplays? a (?:crucial|pivotal|vital|key) role\b",
-    r"\bfundamentally (?:transform|chang|reshap)\w*\b",
-    r"\ba testament to\b",
-    r"\brich tapestry\b",
-    r"\bever-(?:evolving|changing)\b",
-    r"\bin the realm of\b",
-    r"\bin the landscape of\b",
-    r"\bwhen it comes to\b",
-    r"\bpaves? the way for\b",
-    r"\bopens? up new avenues\b",
-    r"\ba wide (?:range|variety|spectrum) of\b",
-    r"\ba (?:multitude|plethora|myriad) of\b",
-    r"\bdouble-edged sword\b",
-    r"\bthe tip of the iceberg\b",
-    r"\bunleash(?:ing)? the power of\b",
-    r"\bnavigating the complexities of\b",
-    # Rhetorical parallelisms & synthetic transitions
-    r"\bnot only\b[^.!?]{1,120}\bbut also\b",
-    r"\bfirst and foremost\b",
-    r"\blast but not least\b",
-    r"\bin light of the fact that\b",
-    r"\bdue to the fact that\b",
-    r"\bwith a view to\b",
-    r"\bat this point in time\b",
-]
-
-_AI_TELLS_REGEX = re.compile("|".join(f"(?:{p})" for p in _AI_TELLS_PATTERNS), re.IGNORECASE)
+# Signal weights (sum to 1 when perplexity is available).
+_W = {"burstiness": 0.28, "vocabulary": 0.30, "structure": 0.20, "uniformity": 0.10, "perplexity": 0.12}
 
 
-@lru_cache(maxsize=1)
+# ---------------------------------------------------------------------------
+# Optional neural perplexity
+# ---------------------------------------------------------------------------
 def _load_model():
-    if not _TORCH_OK:
-        return None, None, None
+    if "loaded" in _TORCH_STATE:
+        return _TORCH_STATE.get("bundle")
+    _TORCH_STATE["loaded"] = True
+    _TORCH_STATE["bundle"] = None
     try:
+        import torch  # type: ignore
+        from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
+
         tok = AutoTokenizer.from_pretrained(_MODEL_NAME)
         model = AutoModelForCausalLM.from_pretrained(_MODEL_NAME)
         model.eval()
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model.to(device)
-        return tok, model, device
+        _TORCH_STATE["bundle"] = (torch, tok, model, device)
     except Exception:
-        return None, None, None
+        _TORCH_STATE["bundle"] = None
+    return _TORCH_STATE["bundle"]
 
 
-def _shannon_entropy(text: str) -> float:
-    """Calculate character-level Shannon entropy (bits/char) as zero-dep fallback."""
-    if not text:
-        return 0.0
-    counts = collections.Counter(text.lower())
-    n = len(text)
-    ent = -sum((c / n) * math.log2(c / n) for c in counts.values())
-    return ent
+def model_available() -> bool:
+    return _load_model() is not None
 
 
-def _statistical_surprisal(text: str) -> float:
-    """Estimate token perplexity approximation using character entropy and Zipf frequency."""
-    ent = _shannon_entropy(text)
-    # Typical English prose has Shannon entropy between 4.1 and 4.9 bits/char.
-    # Higher entropy corresponds to unexpected vocabulary & varied syntax.
-    approx_ppl = math.exp(min(4.5, max(2.5, ent - 1.2)))
-    return approx_ppl * 6.5
-
-
+@lru_cache(maxsize=2048)
 def _perplexity(text: str) -> Optional[float]:
-    """Calculate token-level perplexity of text chunk."""
     text = text.strip()
     if len(text.split()) < 3:
         return None
-
-    if _TORCH_OK:
-        try:
-            tok, model, device = _load_model()
-            if tok is not None and model is not None:
-                enc = tok(text, return_tensors="pt", truncation=True, max_length=512)
-                ids = enc.input_ids.to(device)
-                if ids.shape[1] >= 2:
-                    with torch.no_grad():
-                        out = model(ids, labels=ids)
-                    nll = out.loss.item()
-                    if math.isfinite(nll):
-                        return math.exp(min(nll, 20.0))
-        except Exception:
-            pass
-
-    # Statistical fallback when PyTorch is not available
-    return _statistical_surprisal(text)
-
-
-_ABBREV_RE = re.compile(
-    r"\b(et al|i\.e|e\.g|Fig|Figs|Tab|Ref|Refs|eq|eqs|approx|ca|vs|vol|no|Dr|Prof|al|ed|eds)\.",
-    re.IGNORECASE,
-)
-
-
-def _sentences(text: str) -> list[str]:
-    if not text:
-        return []
-    # Protect common academic and scientific abbreviation periods from splitting
-    masked = _ABBREV_RE.sub(lambda m: m.group(1) + "\u200b", text)
+    bundle = _load_model()
+    if bundle is None:
+        return None
+    torch, tok, model, device = bundle  # type: ignore[misc]
     try:
-        from nltk.tokenize import sent_tokenize
-        raw_sents = [s for s in sent_tokenize(masked) if s.strip()]
+        enc = tok(text, return_tensors="pt", truncation=True, max_length=512)
+        ids = enc.input_ids.to(device)
+        if ids.shape[1] < 2:
+            return None
+        with torch.no_grad():
+            out = model(ids, labels=ids)
+        nll = float(out.loss.item())
+        return math.exp(min(nll, 20.0)) if math.isfinite(nll) else None
     except Exception:
-        raw_sents = [s for s in re.split(r"(?<=[.!?])\s+", masked) if s.strip()]
-    return [s.replace("\u200b", ".").strip() for s in raw_sents if s.strip()]
+        return None
 
 
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
 def _sigmoid(x: float) -> float:
     return 1.0 / (1.0 + math.exp(-max(-60.0, min(60.0, x))))
 
 
-def score_text(text: str) -> dict:
-    """Return {ai_score, perplexity, burstiness, smooth_frac, ai_tells, sentences, ttr}."""
-    text = (text or "").strip()
-    words = text.split()
-    if len(words) < 8:
-        return {
-            "ai_score": 0.0,
-            "perplexity": 0.0,
-            "burstiness": 0.0,
-            "smooth_frac": 0.0,
-            "ai_tells": 0,
-            "sentences": 0,
-            "ttr": 1.0,
-            "note": "too short to score reliably",
-        }
+def _ramp(x: float, lo: float, hi: float) -> float:
+    """0 at `lo`, 1 at `hi` (works for decreasing ramps when lo > hi)."""
+    if lo == hi:
+        return 0.0
+    t = (x - lo) / (hi - lo)
+    return max(0.0, min(1.0, t))
 
-    sents = _sentences(text)
-    ppls = [p for p in (_perplexity(s) for s in sents) if p is not None]
 
-    # Calculate token perplexity
-    overall_ppl = _perplexity(text) or (sum(ppls) / len(ppls) if ppls else 35.0)
+def _mattr(tokens: list[str], window: int = 50) -> float:
+    """Moving-average type-token ratio (length-independent lexical diversity)."""
+    if not tokens:
+        return 1.0
+    if len(tokens) <= window:
+        return len(set(tokens)) / len(tokens)
+    vals = [len(set(tokens[i:i + window])) / window for i in range(0, len(tokens) - window + 1, 5)]
+    return sum(vals) / len(vals)
 
-    # Calculate burstiness (sentence-length variance + perplexity variance)
-    sent_lens = [len(s.split()) for s in sents]
-    mean_len = sum(sent_lens) / max(1, len(sent_lens))
-    len_var = sum((l - mean_len) ** 2 for l in sent_lens) / max(1, len(sent_lens) - 1) if len(sent_lens) > 1 else 0.0
-    len_std = math.sqrt(max(0.0, len_var))
-    cv_len = (len_std / mean_len) if mean_len > 0 else 0.0
 
-    if len(sents) <= 1 or len(words) < 20:
-        # Single-sentence or short paragraphs cannot compute variance reliably;
-        # set neutral burstiness baseline to avoid false-positive AI spikes on headings
-        burstiness = _BUR_MID
-    elif len(ppls) >= 2:
-        mean_ppl = sum(ppls) / len(ppls)
-        ppl_var = sum((p - mean_ppl) ** 2 for p in ppls) / (len(ppls) - 1)
-        ppl_std = math.sqrt(max(0.0, ppl_var))
-        burstiness = ppl_std + (cv_len * 25.0)
-    else:
-        burstiness = cv_len * 45.0
+def _first_word(s: str) -> str:
+    m = re.match(r"[\"'“(]*([A-Za-z]+)", s)
+    return m.group(1).lower() if m else ""
 
-    # Smooth fraction
-    if ppls:
-        smooth_frac = sum(1 for p in ppls if p < _SMOOTH_PPL) / len(ppls)
-    else:
-        smooth_frac = 0.0
 
-    # AI stylistic tell density
-    tells = len(_AI_TELLS_REGEX.findall(text))
-    pat_density = tells * 100.0 / max(1, len(words))
-
-    # Type-Token Ratio (lexical diversity)
-    unique_words = set(w.lower() for w in words)
-    ttr = len(unique_words) / max(1, len(words))
-
-    ppl_term = _sigmoid(_PPL_SLOPE * (_PPL_MID - overall_ppl))
-    bur_term = _sigmoid(_BUR_SLOPE * (_BUR_MID - burstiness))
-    frc_term = _sigmoid(_FRC_SLOPE * (smooth_frac - _FRC_MID))
-    pat_term = _sigmoid(_PAT_SLOPE * (pat_density - _PAT_MID))
-
-    ai_score = 100.0 * (_W_PPL * ppl_term + _W_BUR * bur_term + _W_FRC * frc_term + _W_PAT * pat_term)
-
-    # Clean signal adjustment
-    if tells == 0 and burstiness > 50.0:
-        ai_score = min(ai_score, 4.5)
-
+def _sentence_features(s: str, mean_len: float) -> dict:
+    n = len(s.split())
+    tells = find_tells(s)
+    tw = sum(t["weight"] for t in tells)
     return {
-        "ai_score": round(max(0.0, min(100.0, ai_score)), 1),
-        "perplexity": round(overall_ppl, 1),
-        "burstiness": round(burstiness, 1),
-        "smooth_frac": round(smooth_frac, 2),
-        "ai_tells": tells,
-        "sentences": len(sents),
-        "ttr": round(ttr, 2),
+        "words": n,
+        "tells": tells,
+        "tell_weight": tw,
+        "transition": bool(_TRANSITION_START.match(s)),
+        "tail": bool(_TAIL.search(s)),
+        "triad": bool(_TRIAD.search(s)),
+        "dash": bool(_DASH.search(s)),
+        "mid_length": abs(n - mean_len) <= 4 and 14 <= n <= 30,
     }
+
+
+def _sentence_score(f: dict) -> float:
+    z = -2.0
+    z += 1.6 * min(2.5, f["tell_weight"])
+    z += 1.3 * f["transition"] + 1.1 * f["tail"] + 0.6 * f["triad"] + 0.5 * f["dash"]
+    z += 0.6 * f["mid_length"]
+    return _sigmoid(z)
+
+
+# ---------------------------------------------------------------------------
+# Public API
+# ---------------------------------------------------------------------------
+def analyze(text: str) -> dict:
+    """Full analysis: overall score, per-signal breakdown, tell spans and sentence scores."""
+    text = (text or "").strip()
+    toks = [w.lower() for w in words(text)]
+    n_words = len(toks)
+    sents = split_sentences(text)
+    base = {
+        "ai_score": 0.0,
+        "verdict": "Too short to judge",
+        "confidence": "low",
+        "perplexity": None,
+        "perplexity_source": "model" if _TORCH_STATE.get("bundle") else "unavailable",
+        "burstiness": 0.0,
+        "smooth_frac": 0.0,
+        "ai_tells": 0,
+        "sentences": len(sents),
+        "words": n_words,
+        "ttr": round(_mattr(toks), 2) if toks else 1.0,
+        "signals": [],
+        "tells": [],
+        "sentence_scores": [],
+    }
+    if n_words < 8:
+        base["note"] = "too short to score reliably"
+        return base
+
+    lens = [len(s.split()) for s in sents] or [n_words]
+    mean_len = sum(lens) / len(lens)
+    cv = (statistics.pstdev(lens) / mean_len) if len(lens) >= 2 and mean_len else 0.0
+
+    feats = [_sentence_features(s, mean_len) for s in sents]
+    sent_scores = [_sentence_score(f) for f in feats]
+
+    # 1. Burstiness — needs at least three sentences to mean anything.
+    if len(sents) >= 3:
+        c_burst = _ramp(cv, 0.62, 0.22)  # CV 0.22 -> fully AI-like, 0.62 -> human-like
+    else:
+        c_burst = 0.5
+    # 2. Vocabulary — weighted tells per 100 words.
+    tells = find_tells(text)
+    tell_w = sum(t["weight"] for t in tells)
+    density = tell_w * 100.0 / max(1, n_words)
+    c_vocab = _sigmoid(2.4 * (density - 1.0))
+    if not tells:
+        c_vocab = 0.0
+    # 3. Structure — formula rate per sentence.
+    n_s = max(1, len(sents))
+    rate = (sum(f["transition"] for f in feats) * 1.0 + sum(f["tail"] for f in feats) * 1.0
+            + sum(f["triad"] for f in feats) * 0.6 + sum(f["dash"] for f in feats) * 0.5) / n_s
+    c_struct = _sigmoid(7.0 * (rate - 0.28))
+    if rate == 0:
+        c_struct = 0.0
+    # 4. Uniformity — repeated openers + share of mid-length sentences.
+    firsts = [_first_word(s) for s in sents if _first_word(s)]
+    if len(firsts) >= 3:
+        top = max(firsts.count(w) for w in set(firsts)) / len(firsts)
+        repeats = sum(1 for a, b in zip(firsts, firsts[1:], strict=False) if a == b) / (len(firsts) - 1)
+    else:
+        top, repeats = 0.0, 0.0
+    mid_share = sum(f["mid_length"] for f in feats) / n_s
+    c_uniform = max(0.0, min(1.0, 0.45 * _ramp(top, 0.25, 0.6) + 0.25 * _ramp(repeats, 0.0, 0.5) + 0.30 * _ramp(mid_share, 0.3, 0.8)))
+    # Contractions are a mild human signal in casual prose.
+    contractions = len(_CONTRACTION.findall(text))
+    if contractions and n_words > 0:
+        c_uniform *= max(0.6, 1.0 - contractions * 25.0 / n_words)
+
+    # 5. Perplexity — only when a real language model is installed.
+    ppl = _perplexity(text) if _load_model() is not None else None
+    c_ppl = None
+    if ppl is not None:
+        c_ppl = _sigmoid(0.12 * (30.0 - ppl))
+
+    comps = {
+        "burstiness": c_burst,
+        "vocabulary": c_vocab,
+        "structure": c_struct,
+        "uniformity": c_uniform,
+    }
+    if c_ppl is not None:
+        comps["perplexity"] = c_ppl
+    total_w = sum(_W[k] for k in comps)
+    raw = sum(_W[k] * v for k, v in comps.items()) / total_w
+    # Strong single signals should not be averaged away: blend with the max.
+    peak = max(c_vocab, c_struct)
+    score = 100.0 * (0.75 * raw + 0.25 * peak * (0.5 + 0.5 * c_burst))
+
+    # Short texts are noisy — pull toward the middle a little.
+    if n_words < 60:
+        score = 0.7 * score + 0.3 * 35.0
+    confidence = "high" if n_words >= 150 and len(sents) >= 5 else ("medium" if n_words >= 60 else "low")
+
+    score = round(max(0.0, min(100.0, score)), 1)
+    if score < 20:
+        verdict = "Reads as human-written"
+    elif score < 45:
+        verdict = "Mostly human, a few AI patterns"
+    elif score < 70:
+        verdict = "Mixed — noticeable AI patterns"
+    else:
+        verdict = "Likely AI-generated"
+
+    signals = [
+        {"key": "burstiness", "label": "Sentence rhythm", "value": round(cv, 2), "ai": round(c_burst * 100),
+         "hint": "Mix short and long sentences." if c_burst > 0.5 else "Good variety of sentence lengths."},
+        {"key": "vocabulary", "label": "AI vocabulary", "value": round(density, 2), "ai": round(c_vocab * 100),
+         "hint": f"{len(tells)} stock word(s)/phrase(s) found." if tells else "No stock AI phrases."},
+        {"key": "structure", "label": "Formulaic structure", "value": round(rate, 2), "ai": round(c_struct * 100),
+         "hint": "Transition openers, -ing tails, triads or dashes." if c_struct > 0.4 else "Natural structure."},
+        {"key": "uniformity", "label": "Uniformity", "value": round(top, 2), "ai": round(c_uniform * 100),
+         "hint": "Many sentences start the same way or have similar length." if c_uniform > 0.5 else "Varied openings."},
+    ]
+    if c_ppl is not None:
+        signals.append({"key": "perplexity", "label": "Predictability", "value": round(ppl, 1), "ai": round(c_ppl * 100),
+                        "hint": "Very predictable word choices." if c_ppl > 0.5 else "Natural word choices."})
+
+    # Sentence offsets for UI highlighting.
+    sentence_scores = []
+    cursor = 0
+    for s, sc, f in zip(sents, sent_scores, feats, strict=True):
+        idx = text.find(s[:20], cursor)
+        start = idx if idx >= 0 else cursor
+        end = start + len(s)
+        cursor = end
+        reasons = []
+        if f["tells"]:
+            reasons.append("AI vocabulary")
+        if f["transition"]:
+            reasons.append("formulaic opener")
+        if f["tail"]:
+            reasons.append("-ing tail")
+        if f["triad"]:
+            reasons.append("list of three")
+        if f["dash"]:
+            reasons.append("em dash")
+        sentence_scores.append({"start": start, "end": end, "score": round(sc * 100), "reasons": reasons})
+
+    base.update({
+        "ai_score": score,
+        "verdict": verdict,
+        "confidence": confidence,
+        "perplexity": round(ppl, 1) if ppl is not None else None,
+        "perplexity_source": "model" if ppl is not None else "unavailable",
+        "burstiness": round(cv * 100, 1),
+        "smooth_frac": round(sum(1 for s in sent_scores if s >= 0.5) / n_s, 2),
+        "ai_tells": len(tells),
+        "signals": signals,
+        "tells": tells,
+        "sentence_scores": sentence_scores,
+    })
+    return base
+
+
+def score_text(text: str) -> dict:
+    """Compact score dict (backwards compatible): ai_score, perplexity, burstiness, smooth_frac, ai_tells, sentences, ttr."""
+    a = analyze(text)
+    keep = ("ai_score", "verdict", "confidence", "perplexity", "perplexity_source", "burstiness",
+            "smooth_frac", "ai_tells", "sentences", "words", "ttr", "signals")
+    out = {k: a[k] for k in keep if k in a}
+    if "note" in a:
+        out["note"] = a["note"]
+    return out
 
 
 def sentence_perplexity(sentence: str) -> Optional[float]:
     return _perplexity(sentence)
 
 
-def smooth_sentences(text: str, threshold: float = _SMOOTH_PPL) -> list[tuple[int, str, float]]:
-    out: list[tuple[int, str, float]] = []
-    for i, s in enumerate(_sentences(text)):
-        p = _perplexity(s)
-        if p is not None and p < threshold:
-            out.append((i, s, p))
-    out.sort(key=lambda t: t[2])
+def smooth_sentences(text: str, threshold: float = 50.0) -> list[tuple[int, str, float]]:
+    """Return the most machine-like sentences as (index, sentence, ai_score) sorted worst-first.
+
+    `threshold` is an AI-likeness percentage (sentences scoring at or above it are returned).
+    """
+    sents = split_sentences(text)
+    if not sents:
+        return []
+    lens = [len(s.split()) for s in sents]
+    mean_len = sum(lens) / len(lens)
+    out = []
+    for i, s in enumerate(sents):
+        sc = _sentence_score(_sentence_features(s, mean_len)) * 100
+        if sc >= threshold:
+            out.append((i, s, round(sc, 1)))
+    out.sort(key=lambda t: -t[2])
     return out
 
 
-def split_sentences(text: str) -> list[str]:
-    return _sentences(text)
-
-
 def warmup() -> None:
-    if _TORCH_OK:
-        _load_model()
+    _load_model()
+
+
+__all__ = ["analyze", "score_text", "split_sentences", "smooth_sentences", "sentence_perplexity", "warmup", "model_available"]

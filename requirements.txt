@@ -1,0 +1,13 @@
+# Core (required)
+python-docx>=1.1
+fastapi>=0.110
+uvicorn>=0.27
+python-multipart>=0.0.9
+
+# Recommended extras
+pypdf>=4.0      # PDF import
+ftfy>=6.1       # better repair of broken text encoding
+
+# Optional: neural perplexity signal for the detector (large download)
+# torch>=2.1
+# transformers>=4.40
