@@ -12,6 +12,11 @@ appDir = fso.GetParentFolderName(WScript.ScriptFullName)
 logPath = appDir & "\launch.log"
 WshShell.CurrentDirectory = appDir
 
+If Not fso.FileExists(WshShell.SpecialFolders("Desktop") & "\Humanizer Pro.lnk") _
+   And fso.FileExists(appDir & "\Install Desktop Shortcut.vbs") Then
+  WshShell.Run "wscript //nologo " & q & appDir & "\Install Desktop Shortcut.vbs" & q & " /quiet", 0, False
+End If
+
 Function ServerUp()
   Dim h
   ServerUp = False

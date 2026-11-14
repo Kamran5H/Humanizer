@@ -326,8 +326,16 @@ def test_cancelled_request_does_not_mark_provider_as_broken(monkeypatch):
     assert not providers._COOLDOWNS
 
 
-def test_omniroute_missing_model_is_explained(monkeypatch):
+def test_omniroute_default_and_empty_model_handling(monkeypatch):
     monkeypatch.setenv("OMNIROUTE_API_KEY", "test")
+    monkeypatch.delenv("OMNIROUTE_MODELS", raising=False)
+    pool = providers._build_pool()
+    assert [(p["name"], p["model"]) for p in pool] == [
+        ("OmniRoute", "auto/best-free"),
+        ("OmniRoute", "auto/best-chat"),
+    ]
+    assert not providers.configuration_warnings()
+    monkeypatch.setenv("OMNIROUTE_MODELS", "   ")
     assert "OMNIROUTE_MODELS" in providers.configuration_warnings()[0]
 
 

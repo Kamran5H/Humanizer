@@ -99,9 +99,9 @@ pip install -r requirements.txt
 python humanizer_pro.py                                 # opens the web studio in your browser
 ```
 
-Optional: copy `.env.example` to `.env` and paste in any API key for LLM-quality rewrites (see [PROVIDERS.md](PROVIDERS.md)). One free key is enough.
+Optional: copy `.env.example` to `.env` and paste in any API key for LLM-quality rewrites, or run [`OmniRoute_Colab.ipynb`](OmniRoute_Colab.ipynb) in Google Colab to host an OmniRoute gateway with a Cloudflare tunnel (see [PROVIDERS.md](PROVIDERS.md)). One free key is enough.
 
-On Windows you can double-click `run_humanizer.vbs` to start the studio silently.
+On Windows you can double-click `run_humanizer.vbs` to start the studio silently (it also creates the **Humanizer Pro** desktop shortcut automatically), `Start Humanizer.bat` for a visible console window, or `Install Desktop Shortcut.vbs` to create or repair the desktop icon.
 
 ## Web studio
 
@@ -204,6 +204,9 @@ humanizer/
   text.py       sentence splitting, conjugation (no NLTK needed)
   web.py, templates/index.html   web studio
   cli.py, gui.py                 command line and desktop app
+OmniRoute_Colab.ipynb            Google Colab OmniRoute gateway + Drive backup & tunnel
+Start Humanizer.bat / run_humanizer.vbs   Windows launchers (visible console / silent)
+Install Desktop Shortcut.vbs     Creates or repairs the desktop icon
 tools/detector_harness.py        optional checks against third-party detectors
 tests/                           offline pytest suite
 ```

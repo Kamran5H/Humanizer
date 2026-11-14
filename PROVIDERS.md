@@ -24,8 +24,8 @@ and fill in any keys you have. Restart the app. Environment variables work too.
 
 | Variable | Provider | Default model(s) | Free tier | Sign up |
 |---|---|---|---|---|
-| `GROQ_API_KEY` | Groq | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` | yes | <https://console.groq.com/keys> |
-| `GEMINI_API_KEY` | Google Gemini | `gemini-2.5-flash`, `gemini-2.5-flash-lite` | yes | <https://aistudio.google.com/apikey> |
+| `GROQ_API_KEY` | Groq | `openai/gpt-oss-120b`, `qwen/qwen3.8-27b` | yes | <https://console.groq.com/keys> |
+| `GEMINI_API_KEY` | Google Gemini | `gemini-3.5-flash`, `gemini-3.5-flash-lite`, `gemini-3.1-flash-lite` | yes | <https://aistudio.google.com/apikey> |
 | `CEREBRAS_API_KEY` | Cerebras | `gpt-oss-120b` | yes | <https://cloud.cerebras.ai> |
 | `OPENROUTER_API_KEY` | OpenRouter | `openrouter/free` | yes | <https://openrouter.ai/keys> |
 | `SAMBANOVA_API_KEY` | SambaNova | `Meta-Llama-3.3-70B-Instruct` | yes | <https://cloud.sambanova.ai> |
@@ -45,9 +45,9 @@ GitHub Models [retired on July 30, 2026](https://github.blog/changelog/2026-07-3
 Every provider reads an optional `<NAME>_MODELS` variable (comma separated):
 
 ```dotenv
-GROQ_MODELS=llama-3.3-70b-versatile
-OPENROUTER_MODELS=meta-llama/llama-3.3-70b-instruct:free
-GEMINI_MODELS=gemini-2.5-flash
+GROQ_MODELS=openai/gpt-oss-120b,qwen/qwen3.8-27b
+OPENROUTER_MODELS=openrouter/free
+GEMINI_MODELS=gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite
 ANTHROPIC_MODELS=claude-sonnet-4-6
 ```
 
@@ -92,7 +92,7 @@ compatibility with newer Claude models, which do not support them; see the
 
 ## OmniRoute and FreeLLMAPI gateways
 
-[OmniRoute](https://github.com/ourines/omniroute) and
+[OmniRoute](https://github.com/cheaper-inference/OmniRoute) and
 [FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) expose OpenAI-compatible
 endpoints and manage their own upstream credentials and routing. Humanizer can
 rotate across both gateways, their configured models, and direct providers.
@@ -101,18 +101,21 @@ Configured gateways are preferred before direct providers; Ollama is last.
 ```dotenv
 OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
 OMNIROUTE_API_KEY=your-gateway-key
-OMNIROUTE_MODELS=your-exact-model-or-combo-id,another-configured-id
+OMNIROUTE_MODELS=auto/best-free,auto/best-chat,groq/openai/gpt-oss-120b,gemini/gemini-3.5-flash,openrouter/auto
 
 FREELLMAPI_BASE_URL=http://127.0.0.1:3001/v1
 FREELLMAPI_API_KEY=your-unified-key
 FREELLMAPI_MODELS=auto:reliable
 ```
 
-Use the exact OmniRoute model/combo IDs from its dashboard, not a guessed model
-name. FreeLLMAPI documents `auto` and `auto:reliable` routing aliases. Its gateway
+If `OMNIROUTE_MODELS` is omitted, Humanizer defaults to `auto/best-free,auto/best-chat`.
+You can also specify exact OmniRoute model or combo IDs from its dashboard.
+FreeLLMAPI documents `auto` and `auto:reliable` routing aliases. Its gateway
 key does not create quota: upstream provider accounts must be configured there.
-`localhost` refers to the machine running Humanizer. If the gateway runs on a
-different machine or container, use its reachable URL instead.
+`localhost` refers to the machine running Humanizer. If the gateway runs on
+Google Colab (via [`OmniRoute_Colab.ipynb`](OmniRoute_Colab.ipynb)) or another
+machine, run the notebook's Cloudflare Tunnel cell (`Step 4B`) and set
+`OMNIROUTE_BASE_URL=https://<tunnel-id>.trycloudflare.com/v1`.
 
 Open the provider panel and click **Test connections** to send a tiny test prompt
 to each endpoint. Successful checks show **connection tested**; a failed or

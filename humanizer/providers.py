@@ -48,8 +48,8 @@ _OAI_COOLDOWNS = _COOLDOWNS
 
 # (env var, base url, default models csv, display name)
 _FREE_PROVIDER_REGISTRY: list[tuple[str, str, str, str]] = [
-    ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash,gemini-2.5-flash-lite", "Gemini"),
-    ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile,llama-3.1-8b-instant", "Groq"),
+    ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-3.5-flash,gemini-3.5-flash-lite,gemini-3.1-flash-lite", "Gemini"),
+    ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "openai/gpt-oss-120b,qwen/qwen3.8-27b", "Groq"),
     ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1", "gpt-oss-120b", "Cerebras"),
     ("SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", "SambaNova"),
     ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "openrouter/free", "OpenRouter"),
@@ -186,20 +186,21 @@ def _build_pool(primary_base: Optional[str] = None) -> list[dict]:
     base = (primary_base or os.environ.get("STEALTH_API_BASE", "")).strip()
     if base:
         key = os.environ.get("STEALTH_API_KEY", "").strip() or "none"
-        models_raw = os.environ.get("STEALTH_MODEL", "").strip() or "llama-3.3-70b-versatile"
+        models_raw = os.environ.get("STEALTH_MODEL", "").strip() or "openai/gpt-oss-120b"
         for m in [x.strip() for x in models_raw.split(",") if x.strip()]:
             add("Custom", base, m, key)
 
     # Gateways already manage upstream credentials/rotation. Keep their keys on
     # the server and use the model or combo IDs from the user's gateway catalog.
     for prefix, name, default_base, default_model in (
-        ("OMNIROUTE", "OmniRoute", "http://127.0.0.1:20128/v1", ""),
+        ("OMNIROUTE", "OmniRoute", "http://127.0.0.1:20128/v1", "auto/best-free,auto/best-chat"),
         ("FREELLMAPI", "FreeLLMAPI", "http://127.0.0.1:3001/v1", "auto"),
     ):
         gateway_key = os.environ.get(f"{prefix}_API_KEY", "").strip()
         gateway_base = os.environ.get(f"{prefix}_BASE_URL", default_base).strip()
-        gateway_models = os.environ.get(f"{prefix}_MODELS", default_model).strip()
-        if gateway_key:
+        raw_models = os.environ.get(f"{prefix}_MODELS")
+        gateway_models = (default_model if raw_models is None else raw_models).strip()
+        if gateway_key and gateway_models:
             for model in gateway_models.split(","):
                 add(name, gateway_base, model.strip(), gateway_key)
 
@@ -234,8 +235,9 @@ def has_providers() -> bool:
 def configuration_warnings() -> list[str]:
     load_keys_if_needed()
     warnings = []
-    if os.environ.get("OMNIROUTE_API_KEY", "").strip() and not os.environ.get("OMNIROUTE_MODELS", "").strip():
-        warnings.append("OMNIROUTE_API_KEY is set, but OMNIROUTE_MODELS is missing. Copy a model or combo ID from the gateway dashboard.")
+    omni_models = os.environ.get("OMNIROUTE_MODELS")
+    if os.environ.get("OMNIROUTE_API_KEY", "").strip() and omni_models is not None and not omni_models.strip():
+        warnings.append("OMNIROUTE_API_KEY is set, but OMNIROUTE_MODELS is empty. Copy a model or combo ID from the gateway dashboard (or omit OMNIROUTE_MODELS to use auto/best-free,auto/best-chat).")
     if os.environ.get("GITHUB_MODELS_TOKEN") or ("GITHUB_TOKEN" in _FILE_KEYS and os.environ.get("GITHUB_TOKEN")):
         warnings.append("GitHub Models retired on July 30, 2026. Its token is ignored; configure a supported provider or gateway.")
     return warnings
