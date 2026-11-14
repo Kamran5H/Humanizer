@@ -36,7 +36,15 @@ from humanizer.detector import analyze, model_available, score_text
 from humanizer.document import docx_text, extract_text_from_file
 from humanizer.engine import humanize_docx, humanize_text
 from humanizer.lint import lint_text, readability
-from humanizer.providers import available_count, get_provider_status, has_providers, reset_cooldowns
+from humanizer.neural_detector import detect, detector_status
+from humanizer.providers import (
+    available_count,
+    check_connections,
+    configuration_warnings,
+    get_provider_status,
+    has_providers,
+    reset_cooldowns,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -80,9 +88,11 @@ ScoreRequest = TextRequest
 class HumanizeRequest(BaseModel):
     text: str = Field("", max_length=MAX_INPUT_CHARS)
     scientific: bool = True
+    rewrite_headings: bool = True
     stealth_level: int = Field(3, ge=1, le=3)
     target_pct: float = Field(10.0, ge=0, le=100)
     use_gemini: bool = True
+    allow_offline_fallback: bool = True
     session_docx: Optional[str] = None
 
 
@@ -132,6 +142,13 @@ def _session_path(sid: Optional[str], suffix: str = ".docx") -> Optional[Path]:
     return _UPLOAD_DIR / f"{sid}{suffix}"
 
 
+def _source_document(sid: Optional[str]) -> Optional[Path]:
+    path = _session_path(sid)
+    if path is not None and not path.is_file():
+        raise HTTPException(status_code=410, detail="The uploaded Word document has expired. Upload it again to preserve formatting.")
+    return path
+
+
 def _summary(a: dict) -> dict:
     return {k: a.get(k) for k in ("ai_score", "verdict", "confidence", "burstiness", "ai_tells", "sentences", "words", "signals")}
 
@@ -140,17 +157,24 @@ def _run_humanize(req: HumanizeRequest, cancel: Optional[threading.Event] = None
     t0 = time.time()
     cfg = HumanizerConfig(
         use_gemini=req.use_gemini,
+        allow_offline_fallback=req.allow_offline_fallback,
         stealth_level=req.stealth_level,
         target_pct=req.target_pct,
         scientific=req.scientific,
+        rewrite_headings=req.rewrite_headings,
         cancel_event=cancel,
         progress_callback=progress,
         status_callback=status,
     )
-    src_doc = _session_path(req.session_docx)
-    if src_doc is not None and src_doc.exists():
+    src_doc = _source_document(req.session_docx)
+    download_session = None
+    if src_doc is not None:
         source_text = docx_text(src_doc)
-        out_doc = _session_path(req.session_docx, "_humanized.docx")
+        if req.text and req.text != source_text:
+            raise HTTPException(status_code=409, detail="The Word preview was edited as plain text. Restore the Word input "
+                                "or edit the original file in Word and upload it again to retain formatting.")
+        download_session = uuid.uuid4().hex
+        out_doc = _session_path(download_session, "_humanized.docx")
         humanize_docx(src_doc, cfg, dst=out_doc)
         out_text = docx_text(out_doc)
         docx_ready = True
@@ -175,6 +199,10 @@ def _run_humanize(req: HumanizeRequest, cancel: Optional[threading.Event] = None
         "integrity": [{"severity": s, "message": m} for s, m in lint_text(out_text, source_text)
                       if not m.startswith(("AI-tell", "double space"))],
         "docx_ready": docx_ready,
+        "download_session": download_session,
+        "warnings": (["AI rewriting was requested, but some or all paragraphs used offline rules. "
+                      "Check provider status for configuration, authentication, or rate-limit problems."]
+                     if req.use_gemini and cfg.stats.get("rules", 0) else []),
         "duration": round(time.time() - t0, 2),
     }
 
@@ -223,6 +251,7 @@ def api_health() -> dict:
         "llm_configured": has_providers(),
         "llm_ready": available_count(),
         "perplexity_model": model_available(),
+        "provider_warnings": configuration_warnings(),
     }
 
 
@@ -245,11 +274,22 @@ def api_score(req: TextRequest) -> dict:
             "lint_issues": lint_text(text)[:5] if text else []}
 
 
+@app.get("/api/detector")
+def api_detector_status() -> dict:
+    return detector_status()
+
+
+@app.post("/api/detect")
+def api_detect(req: TextRequest) -> dict:
+    """Explicit trained-model check; never substitute the local pattern index."""
+    return detect(req.text)
+
+
 @app.post("/api/jobs")
 def api_create_job(req: HumanizeRequest) -> dict:
     if not (req.text or "").strip() and not req.session_docx:
         raise HTTPException(status_code=400, detail="Empty text provided")
-    _session_path(req.session_docx)  # validate early
+    _source_document(req.session_docx)  # validate before queuing
     _prune_jobs()
     job = Job(req)
     with _JOBS_LOCK:
@@ -315,6 +355,7 @@ def api_upload(file: UploadFile = File(...)) -> dict:
     if suffix != ".docx":
         dest.unlink(missing_ok=True)
     if len(text) > MAX_INPUT_CHARS:
+        dest.unlink(missing_ok=True)
         raise HTTPException(status_code=413, detail="Document is too long")
     return {
         "success": True,
@@ -329,7 +370,12 @@ def api_upload(file: UploadFile = File(...)) -> dict:
 @app.post("/api/download-docx")
 def api_download_docx(req: DownloadDocxRequest):
     out_doc = _session_path(req.session_docx, "_humanized.docx")
-    if out_doc is not None and out_doc.exists():
+    if out_doc is not None:
+        if not out_doc.is_file():
+            raise HTTPException(status_code=410, detail="The formatted result has expired. Rewrite the original document again.")
+        if req.text != docx_text(out_doc):
+            raise HTTPException(status_code=409, detail="The output was edited as plain text. Download TXT/Markdown to include those edits, "
+                                "or restore the result to download its formatted DOCX.")
         return FileResponse(str(out_doc), filename="humanized.docx", media_type=_DOCX_MIME)
     text = (req.text or "").strip()
     if not text:
@@ -357,6 +403,11 @@ def api_download_docx(req: DownloadDocxRequest):
 @app.get("/api/providers")
 def api_providers() -> list[dict]:
     return get_provider_status()
+
+
+@app.post("/api/providers/check")
+def api_check_providers() -> list[dict]:
+    return check_connections()
 
 
 @app.post("/api/reset-cooldowns")

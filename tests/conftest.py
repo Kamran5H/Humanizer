@@ -14,8 +14,11 @@ from humanizer.config import HumanizerConfig  # noqa: E402
 from humanizer.document import Checkpoint  # noqa: E402
 
 _PROVIDER_VARS = [env for env, *_ in providers._FREE_PROVIDER_REGISTRY] + [
-    "GITHUB_TOKEN", "STEALTH_API_BASE", "STEALTH_API_KEY", "STEALTH_MODEL",
+    "GITHUB_TOKEN", "GITHUB_MODELS_TOKEN", "STEALTH_API_BASE", "STEALTH_API_KEY", "STEALTH_MODEL",
     "STEALTH_FALLBACK_BASE", "STEALTH_FALLBACK_MODEL", "STEALTH_FALLBACK_KEY",
+    "OMNIROUTE_API_KEY", "OMNIROUTE_BASE_URL", "OMNIROUTE_MODELS",
+    "FREELLMAPI_API_KEY", "FREELLMAPI_BASE_URL", "FREELLMAPI_MODELS",
+    "HUMANIZER_ENABLE_OVH_ANONYMOUS", "OVH_MODELS",
 ]
 
 
@@ -31,6 +34,7 @@ def isolated(tmp_path, monkeypatch):
     monkeypatch.setattr(providers, "_MIN_INTERVAL", 0.0)
     monkeypatch.setattr(Checkpoint, "DIR", tmp_path / "sessions")
     providers._FILE_KEYS.clear()
+    providers._LAST_SUCCESS.clear()
     providers.reset_cooldowns()
     yield
     providers._FILE_KEYS.clear()

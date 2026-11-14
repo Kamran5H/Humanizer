@@ -21,7 +21,9 @@ class HumanizerConfig:
 
     # --- Engine selection ---------------------------------------------------
     use_gemini: bool = True        # True = use the LLM provider pool when keys exist (auto-falls back to offline rules)
+    allow_offline_fallback: bool = True  # legacy clients may opt in; Studio explicitly requires AI
     scientific: bool = True        # Academic register: no contractions, domain terms untouched
+    rewrite_headings: bool = False
 
     # --- LLM rewrite controls -----------------------------------------------
     stealth_level: int = 3         # 1 = single rewrite, 2 = best-of-N scored, 3 = best-of-N + sentence refinement
@@ -124,9 +126,11 @@ class HumanizerConfig:
     def to_dict(self) -> dict:
         return {
             "use_gemini": self.use_gemini,
+            "allow_offline_fallback": self.allow_offline_fallback,
             "stealth_level": self.stealth_level,
             "target_pct": self.target_pct,
             "scientific": self.scientific,
+            "rewrite_headings": self.rewrite_headings,
             "min_length_ratio": self.min_length_ratio,
             "retry_budget": self.retry_budget,
         }

@@ -7,21 +7,86 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Works offline](https://img.shields.io/badge/Works-offline-10B981)](#offline-and-privacy)
 
-**Rewrite AI-sounding text into natural prose — and see exactly why it sounded like AI.**
+**Rewrite formulaic text into clearer prose, with a local writing-pattern index.**
+
+The index is **not a probability or percentage of AI authorship**, and is not
+calibrated against Turnitin. A result of 13/100 here does not contradict or predict
+an 87% Turnitin report. No rewriting mode guarantees a detector outcome or perfect
+semantic equivalence; review the revised text against the original.
+
+Turnitin defines its percentage over qualifying prose. Its current
+[integration guidance](https://helpcenter.turnitin.com/hc/en-us/articles/49302416618637-How-do-I-display-and-access-the-AI-Writing-score-in-a-custom-API-integration)
+says the AI Writing score is not exposed directly through its Core API. Compare
+against an authorized Turnitin report rather than presenting this local index
+as a Turnitin score.
+
+For Word input, use **Download → Word document (.docx)**. Each result has its own
+download file, independent of later uploads and jobs. The original DOCX package's
+non-document parts (styles, figures, headers, footers, embedded files and other
+metadata) are copied unchanged; body text is updated while retaining paragraph
+and run formatting. Browser jobs also rewrite headings, while reference lists,
+fields, equations and other protected content stay intact. Changed text may reflow
+across lines or pages. **PDF input is text extraction only; original PDF layout
+is not retained.**
+
+Editing a Word preview as plain text cannot safely update its Word formatting.
+If you change the input preview, use **Restore Word input** or edit and re-upload
+the original document; the app will not silently flatten or ignore your edits.
+Editing the result in the plain-text editor has the same limitation.
+TXT/Markdown downloads include those edits; a formatted DOCX download reports a
+conflict rather than silently losing the edits or formatting. To edit the formatted
+result, download it and use Word. **Refine** reuses the formatted Word package
+when the result has not been manually edited.
+
+Studio **AI** mode requires a configured provider and fails clearly if no safe AI
+rewrite is available. **Offline** is an explicit alternative. See [provider setup](PROVIDERS.md)
+for OpenAI, native Claude/Anthropic, and other supported APIs.
+
+You can also configure **OmniRoute**, **FreeLLMAPI**, or explicitly enable
+OVHcloud's anonymous free tier. These routes use the same provider rotation,
+cooldowns, cancellation-aware pacing and error reporting. See [free and gateway setup](PROVIDERS.md#omniroute-and-freellmapi-gateways).
+
+## Optional trained detection
+
+The Studio's **Trained detector** runs the MIT-licensed
+[Desklib detector](https://github.com/desklib/ai-text-detector), independently of
+the writing-pattern rules. Install its optional dependencies and pinned model:
+
+```bash
+pip install -e '.[detection]'
+python -m humanizer.neural_detector --download
+```
+
+For CPU-only PyTorch, install `torch` from the official CPU wheel index first:
+`pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+The model download is about 1.7 GB. It runs locally, checks the whole input in
+token windows, and does not silently truncate a long document to its first page.
+The explicit check accepts 40+ words and up to 100,000 characters. Larger texts
+must be split into sections. Model installation is explicit; page loads and
+health checks never download model weights.
+
+Its displayed value is a token-weighted classifier score, **not the percentage
+of AI-written words**. Intermediate scores (20–80) are shown as inconclusive;
+this display band is not a calibrated accuracy claim. This is an English-text
+model and still needs evaluation on your own human, AI and edited examples.
+For evaluation, [RAID](https://github.com/liamdugan/raid) provides a shared
+benchmark; [Binoculars](https://github.com/ahans30/Binoculars) is another research
+detector, but its default inference requires two Falcon-7B models. Neither
+establishes equivalence to Turnitin.
 
 [Quick start](#quick-start) · [Web studio](#web-studio) · [Command line](#command-line) · [Python API](#python-api) · [How it works](#how-it-works) · [Providers](PROVIDERS.md)
 
-<img src="docs/screenshot.png" alt="Humanizer Pro studio: original text with highlighted AI patterns, rewritten text with tracked changes, and an AI-likelihood score that dropped from 72% to 32%" width="900">
+<img src="docs/screenshot.png" alt="Humanizer Pro studio: original text with highlighted writing patterns, rewritten text with tracked changes, and a local pattern index" width="900">
 
 </div>
 
 ## What it does
 
 - **Rewrites** AI-generated drafts so they read like a person wrote them: varied sentence rhythm, plain verbs, no stock phrases.
-- **Explains** the result with a local AI-likelihood score broken into signals you can act on (rhythm, AI vocabulary, formulaic structure, uniformity) and highlights every offending phrase with a suggested fix.
-- **Never changes your facts.** Numbers, units, statistics, citations (`[3]`, `(Smith et al., 2020)`), URLs, DOIs and equations are locked before rewriting and every result is checked against the source. A rewrite that drops or alters any of them is rejected.
-- **Keeps Word formatting.** Bold, italics, colours, fonts, superscript citations, hyperlinks, Zotero/Mendeley/EndNote citation fields, footnotes and images survive. Headings and reference lists are left alone.
-- **Works with or without an API key.** With no key it uses a fast offline rule engine. Add any free key (Groq, Gemini, Cerebras, OpenRouter …) and it switches to an LLM pool with automatic failover, falling back to the offline engine whenever a provider is down.
+- **Explains** the result with a local writing-pattern index broken into signals you can inspect (rhythm, AI vocabulary, formulaic structure, uniformity) and highlights every offending phrase with a suggested fix.
+- **Checks factual anchors.** Rewrites are checked for numeric changes, dropped citations, changed negation and malformed formatting tokens. These checks reduce errors but cannot prove that meaning is unchanged.
+- **Keeps Word formatting.** Bold, italics, colours, fonts, superscript citations, hyperlinks, Zotero/Mendeley/EndNote citation fields, footnotes and images survive. Studio jobs can rewrite headings; reference lists are left alone.
+- **AI or offline rewriting.** AI mode uses configured providers with automatic failover and reports failures. Select Offline to use the local rule engine without an API key. Legacy scripts may opt into offline fallback.
 - **Two registers.** *Academic* keeps a formal tone and never touches domain terms (catalyst, spectrum, yield, significant, robust …). *General* allows contractions and plainer wording.
 
 ## Quick start
@@ -34,9 +99,9 @@ pip install -r requirements.txt
 python humanizer_pro.py                                 # opens the web studio in your browser
 ```
 
-Optional: copy `.env.example` to `.env` and paste in any API key for LLM-quality rewrites (see [PROVIDERS.md](PROVIDERS.md)). One free key is enough.
+Optional: copy `.env.example` to `.env` and paste in any API key for LLM-quality rewrites, or run [`OmniRoute_Colab.ipynb`](OmniRoute_Colab.ipynb) in Google Colab to host an OmniRoute gateway with a Cloudflare tunnel (see [PROVIDERS.md](PROVIDERS.md)). One free key is enough.
 
-On Windows you can double-click `run_humanizer.vbs` to start the studio silently.
+On Windows you can double-click `run_humanizer.vbs` to start the studio silently (it also creates the **Humanizer Pro** desktop shortcut automatically), `Start Humanizer.bat` for a visible console window, or `Install Desktop Shortcut.vbs` to create or repair the desktop icon.
 
 ## Web studio
 
@@ -45,9 +110,9 @@ On Windows you can double-click `run_humanizer.vbs` to start the studio silently
 | | |
 |---|---|
 | **Live analysis** | The score updates as you type. *Highlight* marks every AI pattern and machine-sounding sentence; click a pattern in the sidebar to jump to it. |
-| **Humanize** | Choose register, strength (Light / Balanced / Max) and engine (Auto / Offline), then press **Ctrl + Enter**. Progress is live and **Esc** cancels (the partial result is kept). |
+| **Humanize** | Choose register, strength (Light / Balanced / Max) and engine (AI / Offline), then press **Ctrl + Enter**. Progress is live and **Esc** cancels (the partial result is kept). |
 | **Changes** | Word-level diff of exactly what was rewritten. |
-| **Integrity check** | Confirms every number, citation and link from the source is still present. |
+| **Integrity check** | Reports issues found by basic checks; review the result for meaning and factual accuracy. |
 | **Files** | Drop or open `.docx`, `.pdf`, `.txt` or `.md`. Word files are rewritten in place with their formatting and downloaded as `.docx`. |
 | **Refine** | Moves the result back into the input for another pass. |
 
@@ -113,9 +178,9 @@ flowchart LR
 | Em-dash overuse | *X — Y — Z* | commas |
 | Generic conclusions | *The future looks bright.* | delete |
 
-**Detector.** The local score blends sentence-length burstiness, weighted pattern density, formulaic structure and uniformity, plus GPT-2 perplexity when `torch` and `transformers` are installed. On the bundled corpus, AI samples score 84–93% and human-written samples 0–20%. It is an *estimate*: it explains what makes text read as machine-written, but it does not guarantee what any third-party detector will say.
+**Pattern index.** The local index blends sentence-length variation, weighted phrase density, structure and uniformity. The optional GPT-2 signal is used only when its dependencies and cached model weights are already available. The bundled samples are regression fixtures, not an independent accuracy benchmark. The separate trained detector above provides a learned model signal, also without a Turnitin-equivalence claim.
 
-**LLM pipeline.** Each paragraph is rewritten by a rotating persona with explicit style rules. At *Balanced* and *Max*, several candidates are scored and the most natural one is kept. *Max* then re-rolls the individual sentences that still read as robotic. Every candidate must pass the fidelity gate; if none does, the paragraph falls back to the offline engine.
+**LLM pipeline.** Each paragraph is rewritten with instructions to retain facts, qualifiers and source formatting tokens. At *Balanced* and *Max*, the lowest local pattern index among candidates that pass basic fidelity checks is selected; this does not establish authorship or external detector performance. *Max* can refine individual sentences. Model output is not passed through the offline substitution pipeline. Interactive AI mode reports a failure if no safe candidate is produced; legacy clients may explicitly allow offline fallback.
 
 ## Offline and privacy
 
@@ -131,13 +196,17 @@ humanizer/
   patterns.py   AI-writing pattern catalogue (single source of truth)
   rules.py      offline rewriter: locking, substitutions, structure repairs, grammar
   engine.py     LLM + offline orchestration, fidelity gate, text & DOCX pipelines
-  detector.py   explainable AI-likelihood scoring
+  detector.py   explainable writing-pattern index
+  neural_detector.py optional pinned trained classifier
   providers.py  multi-provider LLM pool with failover and cooldowns
   document.py   DOCX tagging/rebuild, PDF/TXT/MD extraction, checkpoints
   lint.py       integrity and grammar checks, readability
   text.py       sentence splitting, conjugation (no NLTK needed)
   web.py, templates/index.html   web studio
   cli.py, gui.py                 command line and desktop app
+OmniRoute_Colab.ipynb            Google Colab OmniRoute gateway + Drive backup & tunnel
+Start Humanizer.bat / run_humanizer.vbs   Windows launchers (visible console / silent)
+Install Desktop Shortcut.vbs     Creates or repairs the desktop icon
 tools/detector_harness.py        optional checks against third-party detectors
 tests/                           offline pytest suite
 ```
