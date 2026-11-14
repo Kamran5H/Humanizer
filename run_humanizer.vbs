@@ -1,6 +1,6 @@
 ' Humanizer Pro — silent Windows launcher.
 ' Double-click to start the web studio in the background and open it in your browser.
-' Uses the project's .venv if present, otherwise pythonw/python from PATH.
+' Automatically locates .venv, py.exe, or standard Windows Python installs.
 Option Explicit
 Dim WshShell, fso, q, appDir, py, logPath, i
 
@@ -34,10 +34,35 @@ If ServerUp() Then
   WScript.Quit
 End If
 
-If fso.FileExists(appDir & "\.venv\Scripts\python.exe") Then
-  py = appDir & "\.venv\Scripts\python.exe"
-Else
-  py = "python"
+Function FindPython()
+  Dim localAppData, progDir, subFolder
+  If fso.FileExists(appDir & "\.venv\Scripts\python.exe") Then
+    FindPython = appDir & "\.venv\Scripts\python.exe"
+    Exit Function
+  End If
+  localAppData = WshShell.ExpandEnvironmentStrings("%LOCALAPPDATA%")
+  progDir = localAppData & "\Programs\Python"
+  If fso.FolderExists(progDir) Then
+    For Each subFolder In fso.GetFolder(progDir).SubFolders
+      If fso.FileExists(subFolder.Path & "\python.exe") Then
+        FindPython = subFolder.Path & "\python.exe"
+        Exit Function
+      End If
+    Next
+  End If
+  If fso.FileExists(WshShell.ExpandEnvironmentStrings("%SystemRoot%") & "\py.exe") Then
+    FindPython = WshShell.ExpandEnvironmentStrings("%SystemRoot%") & "\py.exe"
+    Exit Function
+  End If
+  FindPython = "python"
+End Function
+
+py = FindPython()
+
+' If .venv does not exist yet, run Start Humanizer.bat once to install Python/venv
+If Not fso.FileExists(appDir & "\.venv\Scripts\python.exe") Then
+  WshShell.Run q & appDir & "\Start Humanizer.bat" & q, 1, False
+  WScript.Quit
 End If
 
 WshShell.Run "cmd /c " & q & q & py & q & " humanizer_pro.py --web --no-browser > " & q & logPath & q & " 2>&1" & q, 0, False
