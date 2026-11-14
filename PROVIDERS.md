@@ -5,6 +5,17 @@ and it rewrites with an LLM instead, rotating across every configured provider a
 automatically when one is rate-limited, out of daily quota or down. If every provider fails, the
 paragraph is still rewritten by the offline engine, so a job never stalls.
 
+The browser Studio's **AI** mode requires an AI response and does **not** silently
+switch to offline rules. Provider errors or rejected rewrites fail the job with
+an explanation. Select **Offline** explicitly to use the local rule engine.
+Legacy API/CLI clients retain fallback behavior unless they set
+`allow_offline_fallback=False` in `HumanizerConfig` (or `false` in a job request).
+
+ChatGPT, Claude, Claude Code, Codex, and other app subscriptions do not configure
+this app's API connection. A supported provider's API credentials and available
+quota are required. A provider shown as **configured** has not yet been tested
+with a live request.
+
 ## Add a key
 
 Copy `.env.example` to `.env` (or `.keys.env`) in the project folder, or in `~/.config/humanizer/`,
@@ -22,6 +33,7 @@ and fill in any keys you have. Restart the app. Environment variables work too.
 | `TOGETHER_API_KEY` | Together | `Llama-3.3-70B-Instruct-Turbo` | trial credit | <https://api.together.ai> |
 | `DEEPINFRA_API_KEY` | DeepInfra | `Llama-3.3-70B-Instruct` | trial credit | <https://deepinfra.com/dash> |
 | `OPENAI_API_KEY` | OpenAI | `gpt-4o-mini` | paid | <https://platform.openai.com/api-keys> |
+| `ANTHROPIC_API_KEY` | Anthropic (Claude) | `claude-sonnet-4-6` | paid | <https://console.anthropic.com/> |
 
 Free tiers and model names change often; check each provider's page if a model stops working.
 A model that returns *not found* is disabled for 12 hours and the pool moves on.
@@ -38,6 +50,7 @@ Every provider reads an optional `<NAME>_MODELS` variable (comma separated):
 GROQ_MODELS=llama-3.3-70b-versatile
 OPENROUTER_MODELS=meta-llama/llama-3.3-70b-instruct:free
 GEMINI_MODELS=gemini-2.5-flash
+ANTHROPIC_MODELS=claude-sonnet-4-6
 GITHUB_MODELS=gpt-4o-mini
 ```
 
@@ -72,3 +85,10 @@ STEALTH_FALLBACK_MODEL=qwen2.5:7b
 Cooldowns persist across restarts. Calls to the same host are spaced 1.5 s apart (set
 `HUMANIZER_MIN_INTERVAL` to change this) without blocking calls to other providers. Click the engine
 pill in the studio header to see each endpoint's live status and reset all cooldowns.
+
+Claude uses Anthropic's native `/v1/messages` endpoint, with `x-api-key` and
+`anthropic-version` headers. Blank or truncated responses are rejected rather
+than used as a finished rewrite. Set `ANTHROPIC_MODELS` to a model available to
+your account if the default is unavailable. Sampling parameters are omitted for
+compatibility with newer Claude models, which do not support them; see the
+[Messages API guide](https://platform.claude.com/docs/en/build-with-claude/working-with-messages).

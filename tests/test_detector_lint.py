@@ -31,6 +31,16 @@ def test_short_text_is_not_scored():
     assert r["ai_score"] == 0.0 and r["note"]
 
 
+def test_score_identifies_its_limits():
+    for text in ("Too short.", AI_TEXT, HUMAN_TEXT):
+        result = score_text(text)
+        assert result["score_type"] == "writing_pattern_index"
+        assert result["calibrated"] is False
+        assert "not a probability" in result["score_explanation"]
+        assert "Turnitin" in result["score_explanation"]
+        assert "human-written" not in result["verdict"]
+
+
 def test_analyze_offsets_and_signals():
     a = analyze(AI_TEXT)
     assert {s["key"] for s in a["signals"]} >= {"burstiness", "vocabulary", "structure", "uniformity"}

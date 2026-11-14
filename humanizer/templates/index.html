@@ -196,7 +196,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
 <body>
 <header class="top">
   <div class="top-in">
-    <div class="brand"><div class="logo" aria-hidden="true">H</div><div>Humanizer Pro<small>Natural rewriting with a local AI-likelihood score</small></div></div>
+    <div class="brand"><div class="logo" aria-hidden="true">H</div><div>Humanizer Pro<small>Natural rewriting with a local writing-pattern index</small></div></div>
     <div class="spacer"></div>
     <button class="pill" id="enginePill" title="Rewrite engine status"><span class="dot" id="engineDot"></span><span id="engineText">Checking…</span></button>
     <button class="icon-btn" id="btnTheme" title="Toggle theme (light / dark)" aria-label="Toggle theme">
@@ -224,7 +224,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
         </div>
         <div class="ctl"><span>Engine</span>
           <div class="seg" role="group" aria-label="Engine" id="segEngine">
-            <button data-v="auto" aria-pressed="true" title="Use the LLM pool when an API key is configured, offline rules otherwise">Auto</button>
+            <button data-v="auto" aria-pressed="true" title="Require a configured AI provider; errors are shown without switching to offline rules">AI</button>
             <button data-v="offline" aria-pressed="false" title="Never send text anywhere — offline rule engine only">Offline</button>
           </div>
         </div>
@@ -245,7 +245,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     <div class="panes">
       <div class="card pane" id="paneIn">
         <div class="pane-head">
-          <div class="pane-title">Original <span class="chip" id="chipIn" title="Local AI-likelihood estimate">—</span></div>
+          <div class="pane-title">Original <span class="chip" id="chipIn" title="Local writing-pattern index, not an authorship probability">—</span></div>
           <div class="tabs" role="tablist">
             <button role="tab" aria-selected="true" id="tabEdit">Edit</button>
             <button role="tab" aria-selected="false" id="tabMarks">Highlight</button>
@@ -275,7 +275,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
           <button class="btn sm ghost" id="btnReuse" title="Move the result into the input to refine it again" disabled>↺ Refine</button>
           <button class="btn sm ghost" id="btnCopy" disabled>Copy</button>
           <div class="menu">
-            <button class="btn sm" id="btnExport" disabled>Save ▾</button>
+            <button class="btn sm" id="btnExport" disabled>Download ▾</button>
             <div class="menu-list" id="exportMenu">
               <button data-fmt="docx">Word document (.docx)</button>
               <button data-fmt="txt">Plain text (.txt)</button>
@@ -286,7 +286,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
         <div class="pane-body">
           <textarea class="editor" id="txtOut" spellcheck="true" placeholder=""></textarea>
           <div class="view" id="diffView" tabindex="0" aria-label="Changes"></div>
-          <div class="empty" id="outEmpty"><div><b>Your rewrite appears here</b>Facts, numbers, citations and formatting are kept exactly.<br>Press <span class="kbd">Ctrl ↵</span> to start.</div></div>
+          <div class="empty" id="outEmpty"><div><b>Your rewrite appears here</b>Review the rewrite for meaning and accuracy.<br>DOCX downloads retain document styles; PDF imports contain text only.<br>Press <span class="kbd">Ctrl ↵</span> to start.</div></div>
         </div>
         <div class="pane-foot"><span id="statsOut">0 words</span><span class="spacer"></span><span id="metaOut"></span></div>
       </div>
@@ -295,26 +295,26 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
 
   <aside class="side">
     <div class="card sec">
-      <h3>AI-likelihood <span class="muted" id="confTag"></span></h3>
+      <h3>Writing patterns <span class="muted" id="confTag"></span></h3>
       <div class="gauge">
         <div class="ring">
           <svg width="112" height="112" viewBox="0 0 112 112" aria-hidden="true">
             <circle class="track" cx="56" cy="56" r="47" fill="none" stroke-width="10"/>
             <circle class="val" id="ringVal" cx="56" cy="56" r="47" fill="none" stroke-width="10" stroke-linecap="round" stroke-dasharray="295.3" stroke-dashoffset="295.3" stroke="var(--text-3)"/>
           </svg>
-          <div class="num"><div><b id="ringNum">—</b><small>AI score</small></div></div>
+          <div class="num"><div><b id="ringNum">—</b><small>Index / 100</small></div></div>
         </div>
         <div>
           <div class="verdict" id="verdict">Paste text to analyze</div>
-          <div class="sub" id="verdictSub">Scored locally — nothing leaves your machine.</div>
+          <div class="sub" id="verdictSub">Analysis runs on this server. AI rewriting uses configured providers.</div>
           <div class="compare" id="compare" hidden><span id="cmpBefore">—</span><span class="arrow">→</span><b id="cmpAfter">—</b><span class="delta" id="cmpDelta"></span></div>
         </div>
       </div>
-      <div class="sig" id="signals"></div>
+      <p class="sub">Local index out of 100, not a percentage of AI-written text. Not calibrated against Turnitin; a low index does not prove human authorship.</p><div class="sig" id="signals"></div>
     </div>
 
     <div class="card sec">
-      <h3>AI patterns found <span class="chip" id="tellCount">0</span></h3>
+      <h3>Writing patterns found <span class="chip" id="tellCount">0</span></h3>
       <ul class="tells" id="tellList"><li class="muted" style="cursor:default;background:none;border:0;padding:0">No patterns yet.</li></ul>
     </div>
 
@@ -355,7 +355,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   };
   const state = {
     register: store.get('register', 'academic'), level: store.get('level', '3'), engine: store.get('engine', 'auto'),
-    sessionDocx: null, fileName: null, jobId: null, polling: null, lastResult: null, inputAnalysis: null, health: null,
+    jobSource: null, jobFileName: null, sessionDocx: null, fileName: null, jobId: null, polling: null, lastResult: null, inputAnalysis: null, health: null,
   };
 
   // ---------- helpers ----------
@@ -374,7 +374,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   }
   const tone = (s) => s == null ? '' : s < 20 ? 'good' : s < 50 ? 'warn' : 'bad';
   const colorFor = (s) => s == null ? 'var(--text-3)' : s < 20 ? 'var(--good)' : s < 50 ? 'var(--warn)' : 'var(--bad)';
-  function setChip(el, score) { el.className = 'chip ' + tone(score); el.textContent = score == null ? '—' : `${Math.round(score)}% AI`; }
+  function setChip(el, score) { el.className = 'chip ' + tone(score); el.textContent = score == null ? '—' : `${Math.round(score)}/100`; }
 
   // ---------- theme ----------
   const root = document.documentElement;
@@ -397,18 +397,18 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   async function loadHealth() {
     try {
       const h = await api('/api/health'); state.health = h; $('ver').textContent = 'v' + h.version;
-      if (h.llm_configured) { $('engineDot').className = 'dot ' + (h.llm_ready ? 'ok' : 'warn'); $('engineText').textContent = h.llm_ready ? `AI rewrite · ${h.llm_ready} ready` : 'AI rewrite · cooling down'; }
-      else { $('engineDot').className = 'dot warn'; $('engineText').textContent = 'Offline rule engine'; }
+      if (h.llm_configured) { $('engineDot').className = 'dot ' + (h.llm_ready ? 'ok' : 'warn'); $('engineText').textContent = h.llm_ready ? `AI rewrite · ${h.llm_ready} configured` : 'AI rewrite · cooling down'; }
+      else { $('engineDot').className = 'dot warn'; $('engineText').textContent = 'AI key needed · Offline available'; }
     } catch { $('engineText').textContent = 'Server offline'; }
   }
   async function loadProviders() {
     const body = $('provBody'); body.innerHTML = '<tr><td colspan="3" class="muted">Loading…</td></tr>';
     try {
       const list = await api('/api/providers');
-      $('provNote').innerHTML = list.length ? 'Requests rotate across ready endpoints and fail over automatically.'
-        : 'No API keys found. The offline rule engine is used. Add a key such as <code>GROQ_API_KEY</code>, <code>GEMINI_API_KEY</code> or <code>OPENROUTER_API_KEY</code> to a <code>.env</code> file and restart (see PROVIDERS.md).';
+      $('provNote').innerHTML = list.length ? 'Configured does not mean connection-tested. Requests try eligible endpoints and show failures here.'
+        : 'No API keys found. Select Offline explicitly, or add <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code> or another supported key to a <code>.env</code> file and restart (see PROVIDERS.md).';
       body.innerHTML = list.map((p) => {
-        const st = p.status === 'ready' ? '<span class="chip good">ready</span>' : p.status === 'throttled' ? '<span class="chip warn">pacing</span>'
+        const st = p.status === 'ready' ? '<span class="chip good">configured</span>' : p.status === 'throttled' ? '<span class="chip warn">pacing</span>'
           : `<span class="chip bad" title="${esc(p.last_error || '')}">cooling ${Math.ceil(p.cooldown_remaining_sec)}s</span>`;
         return `<tr><td>${esc(p.name)}</td><td><code>${esc(p.model)}</code></td><td>${st}</td></tr>`;
       }).join('') || '<tr><td colspan="3" class="muted">No providers configured.</td></tr>';
@@ -442,14 +442,14 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     const ring = $('ringVal'), C = 295.3;
     if (!a || a.words < 8) {
       ring.style.strokeDashoffset = C; ring.setAttribute('stroke', 'var(--text-3)'); $('ringNum').textContent = '—';
-      $('verdict').textContent = a ? 'Too short to judge' : 'Paste text to analyze'; $('verdictSub').textContent = 'Scored locally — nothing leaves your machine.';
+      $('verdict').textContent = a ? 'Too short to judge' : 'Paste text to analyze'; $('verdictSub').textContent = 'Analysis runs on this server. AI rewriting uses configured providers.';
       $('signals').innerHTML = ''; $('confTag').textContent = ''; $('compare').hidden = true; setRead(null); return;
     }
     ring.style.strokeDashoffset = C * (1 - a.ai_score / 100); ring.setAttribute('stroke', colorFor(a.ai_score));
-    $('ringNum').textContent = Math.round(a.ai_score) + '%';
-    $('verdict').textContent = a.verdict; $('verdictSub').textContent = before != null ? 'Humanized result' : 'Original text';
-    $('confTag').textContent = a.confidence ? a.confidence + ' confidence' : '';
-    if (before != null) { $('compare').hidden = false; $('cmpBefore').textContent = Math.round(before) + '%'; $('cmpAfter').textContent = Math.round(a.ai_score) + '%';
+    $('ringNum').textContent = Math.round(a.ai_score);
+    $('verdict').textContent = a.verdict; $('verdictSub').textContent = before != null ? 'Result · local pattern index' : 'Original text · local pattern index';
+    $('confTag').textContent = a.confidence ? a.confidence + ' signal coverage' : '';
+    if (before != null) { $('compare').hidden = false; $('cmpBefore').textContent = Math.round(before) + '/100'; $('cmpAfter').textContent = Math.round(a.ai_score) + '/100';
       const d = before - a.ai_score; $('cmpDelta').textContent = d > 0 ? `↓ ${Math.round(d)} pts` : ''; } else $('compare').hidden = true;
     $('signals').innerHTML = (a.signals || []).map((s) => `<div class="sig-row" title="${esc(s.hint)}"><span class="lbl">${esc(s.label)}</span><span class="pct">${s.ai}%</span>
       <div class="bar"><i style="width:${s.ai}%;background:${colorFor(s.ai)}"></i></div><span class="hint">${esc(s.hint)}</span></div>`).join('');
@@ -532,9 +532,10 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     const text = txtIn.value;
     if (!text.trim() && !state.sessionDocx) { toast('Paste some text or open a file first.', true); txtIn.focus(); return; }
     if (state.jobId) return;
+    state.jobSource = text; state.jobFileName = state.fileName;
     setBusy(true);
     try {
-      const body = { text, scientific: state.register === 'academic', stealth_level: Number(state.level), target_pct: 10, use_gemini: state.engine !== 'offline', session_docx: state.sessionDocx };
+      const body = { text, scientific: state.register === 'academic', stealth_level: Number(state.level), target_pct: 10, use_gemini: state.engine !== 'offline', allow_offline_fallback: false, rewrite_headings: true, session_docx: state.sessionDocx };
       const { job_id } = await api('/api/jobs', {method: 'POST', body: JSON.stringify(body)});
       state.jobId = job_id; poll();
     } catch (e) { setBusy(false); toast(e.message, true); }
@@ -545,15 +546,14 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
       const j = await api('/api/jobs/' + state.jobId);
       $('progMsg').textContent = j.message || '';
       if (j.progress > 0) { $('progBar').classList.remove('indet'); $('progBar').firstElementChild.style.width = j.progress + '%'; $('progPct').textContent = Math.round(j.progress) + '%'; }
-      if (j.status === 'done' || j.status === 'cancelled') { state.jobId = null; setBusy(false); showResult(j.result, text0()); if (j.status === 'cancelled') toast('Cancelled — partial result kept.'); return; }
+      if (j.status === 'done' || j.status === 'cancelled') { state.jobId = null; setBusy(false); showResult(j.result, state.jobSource); if (j.status === 'cancelled') toast('Cancelled — partial result kept.'); return; }
       if (j.status === 'error') { state.jobId = null; setBusy(false); toast('Failed: ' + j.error, true); return; }
       state.polling = setTimeout(poll, 600);
     } catch (e) { state.jobId = null; setBusy(false); toast(e.message, true); }
   }
-  const text0 = () => txtIn.value;
   async function showResult(r, source) {
     if (!r) return;
-    state.lastResult = { ...r, source };
+    state.lastResult = { ...r, source, fileName: state.jobFileName };
     txtOut.value = r.output; $('outEmpty').style.display = 'none';
     ['btnCopy', 'btnExport', 'btnReuse'].forEach((id) => $(id).disabled = false);
     $('statsOut').textContent = `${wc(r.output).toLocaleString()} words`;
@@ -563,26 +563,55 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     catch { renderAnalysis({...r.after, readability: null}, r.initial_score); }
     const checks = r.integrity || []; const errs = checks.filter((c) => c.severity === 'error');
     $('integrityCard').hidden = false;
-    $('checks').innerHTML = (errs.length ? '' : '<li><span class="ic ok-ic">✓</span><span>Numbers, citations and links preserved</span></li>')
+    $('checks').innerHTML = (errs.length ? '' : '<li><span class="ic ok-ic">✓</span><span>No issues found by basic checks; review meaning and facts</span></li>')
+      + (r.warnings || []).map((message) => `<li><span class="ic warn-ic">!</span><span>${esc(message)}</span></li>`)
       + checks.slice(0, 8).map((c) => `<li><span class="ic ${c.severity === 'error' ? 'err-ic' : 'warn-ic'}">${c.severity === 'error' ? '!' : 'i'}</span><span>${esc(c.message)}</span></li>`).join('');
     if ($('tabDiff').getAttribute('aria-selected') === 'true') renderDiff();
-    if (r.engine === 'rules' && state.engine !== 'offline' && state.health && !state.health.llm_configured) toast('Used the offline engine. Add an API key for deeper AI rewrites.');
+    for (const warning of r.warnings || []) toast(warning, true);
   }
   $('btnRun').onclick = run;
   $('btnCancel').onclick = async () => { if (!state.jobId) return; $('progMsg').textContent = 'Cancelling…'; try { await api(`/api/jobs/${state.jobId}/cancel`, {method: 'POST'}); } catch {} };
-  txtOut.addEventListener('input', () => { $('statsOut').textContent = `${wc(txtOut.value).toLocaleString()} words`; });
+  let outputTimer = null, outputSeq = 0;
+  txtOut.addEventListener('input', () => {
+    $('statsOut').textContent = `${wc(txtOut.value).toLocaleString()} words`;
+    $('integrityCard').hidden = true; setChip($('chipOut'), null); renderAnalysis(null);
+    $('verdict').textContent = 'Result edited — updating analysis';
+    clearTimeout(outputTimer); const seq = ++outputSeq;
+    outputTimer = setTimeout(async () => {
+      const text = txtOut.value;
+      try {
+        const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text})});
+        if (seq !== outputSeq || text !== txtOut.value) return;
+        setChip($('chipOut'), a.words >= 8 ? a.ai_score : null);
+        renderAnalysis(a, state.lastResult && state.lastResult.initial_score);
+      } catch { $('verdict').textContent = 'Edited result — analysis unavailable'; }
+    }, 450);
+  });
 
   // ---------- output actions ----------
   $('btnCopy').onclick = async () => { try { await navigator.clipboard.writeText(txtOut.value); toast('Copied to clipboard'); } catch { txtOut.select(); document.execCommand('copy'); toast('Copied'); } };
-  $('btnReuse').onclick = () => { txtIn.value = txtOut.value; state.sessionDocx = null; $('fileTag').textContent = ''; updateInStats(); store.set('draft', txtIn.value); scheduleAnalyze(); toast('Result moved to input — press Humanize to refine again.'); };
+  $('btnReuse').onclick = async () => {
+    const result = state.lastResult;
+    if (result && result.download_session) {
+      try {
+        const response = await fetch('/api/download-docx', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: txtOut.value, session_docx: result.download_session})});
+        if (!response.ok) { const error = await response.json(); throw new Error(error.detail || 'Could not reuse formatted result'); }
+        await openFile(new File([await response.blob()], result.fileName || 'result.docx', {type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document'}));
+        toast('Formatted Word result moved to input for another pass.');
+      } catch (error) { toast(error.message, true); }
+      return;
+    }
+    txtIn.value = txtOut.value; state.sessionDocx = null; state.fileName = null; $('fileTag').textContent = '';
+    updateInStats(); store.set('draft', txtIn.value); scheduleAnalyze(); toast('Result moved to input — press Humanize to refine again.');
+  };
   $('btnExport').onclick = (e) => { e.stopPropagation(); $('exportMenu').classList.toggle('on'); };
   document.addEventListener('click', () => $('exportMenu').classList.remove('on'));
   $('exportMenu').addEventListener('click', async (e) => {
-    const b = e.target.closest('button'); if (!b) return; const fmt = b.dataset.fmt; const base = (state.fileName || 'humanized').replace(/\.[^.]+$/, '') + (state.fileName ? '_humanized' : '');
+    const b = e.target.closest('button'); if (!b) return; const fmt = b.dataset.fmt; const fileName = state.lastResult && state.lastResult.fileName; const base = (fileName || 'humanized').replace(/\.[^.]+$/, '') + (fileName ? '_humanized' : '');
     if (fmt === 'docx') {
       try {
-        const res = await fetch('/api/download-docx', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: txtOut.value, session_docx: state.sessionDocx})});
-        if (!res.ok) throw new Error('Export failed'); save(await res.blob(), base + '.docx');
+        const res = await fetch('/api/download-docx', {method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({text: txtOut.value, session_docx: state.lastResult && state.lastResult.download_session})});
+        if (!res.ok) { const error = await res.json(); throw new Error(error.detail || 'Export failed'); } save(await res.blob(), base + '.docx');
       } catch (err) { toast(err.message, true); }
     } else save(new Blob([txtOut.value], {type: 'text/plain;charset=utf-8'}), `${base}.${fmt}`);
   });
@@ -595,7 +624,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     try {
       const r = await api('/api/upload', {method: 'POST', body: fd});
       txtIn.value = r.text; state.sessionDocx = r.session_docx; state.fileName = r.filename;
-      $('fileTag').textContent = r.session_docx ? `📄 ${r.filename} · formatting preserved` : `📄 ${r.filename}`;
+      $('fileTag').textContent = r.session_docx ? `📄 ${r.filename} · DOCX formatting retained when downloaded` : `📄 ${r.filename}${/\.pdf$/i.test(r.filename) ? ' · text only; PDF layout is not retained' : ''}`;
       updateInStats(); scheduleAnalyze(); showTab('edit');
     } catch (e) { toast(e.message, true); }
   }

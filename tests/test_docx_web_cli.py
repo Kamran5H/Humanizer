@@ -1,6 +1,7 @@
 import io
 import json
 import time
+import zipfile
 
 import docx
 import pytest
@@ -9,7 +10,7 @@ from docx.oxml.ns import qn
 from docx.shared import Pt, RGBColor
 
 from humanizer.cli import main as cli_main
-from humanizer.document import _reconstruct_runs, _tag_runs, docx_text, select_paragraphs
+from humanizer.document import _reconstruct_runs, _tag_runs, docx_text, save_result, select_paragraphs
 from humanizer.engine import humanize_docx
 from tests.conftest import AI_TEXT
 
@@ -114,6 +115,36 @@ def test_humanize_docx_preserves_structure(sample_docx, cfg, tmp_path):
     assert d.paragraphs[0].text == "Results"
 
 
+def test_rewriting_changes_only_the_document_xml(sample_docx, cfg, tmp_path):
+    # Unknown package parts must survive, even if python-docx does not model them.
+    with zipfile.ZipFile(sample_docx, "a") as source:
+        source.writestr("customXml/vendor-metadata.xml", b"<vendor>Keep exactly</vendor>")
+        source.comment = b"Original archive metadata"
+    output = humanize_docx(sample_docx, cfg, dst=tmp_path / "preserved.docx")
+    with zipfile.ZipFile(sample_docx) as source, zipfile.ZipFile(output) as result:
+        assert source.namelist() == result.namelist()
+        assert source.comment == result.comment
+        for name in source.namelist():
+            if name != "word/document.xml":
+                assert source.read(name) == result.read(name), name
+        assert source.read("word/document.xml") != result.read("word/document.xml")
+
+
+def test_optional_subheading_rewrite_preserves_heading_style(tmp_path, cfg):
+    document = docx.Document()
+    document.add_heading("Leveraging robust approaches", level=2)
+    document.add_heading("References", level=1)
+    document.add_paragraph("A reference entry that leverages robust data.")
+    source = tmp_path / "headings.docx"
+    document.save(source)
+    cfg.rewrite_headings = True
+    result = docx.Document(humanize_docx(source, cfg))
+    assert "Leveraging" not in result.paragraphs[0].text
+    assert result.paragraphs[0].style.name == "Heading 2"
+    assert result.paragraphs[1].text == "References"
+    assert result.paragraphs[2].text == document.paragraphs[2].text
+
+
 # --------------------------------------------------------------------- web
 
 
@@ -164,10 +195,56 @@ def test_web_upload_and_docx_flow(client, sample_docx):
     assert r["session_docx"] and "Bold claim" in r["text"]
     res = client.post("/api/humanize", json={"text": r["text"], "session_docx": r["session_docx"]}).json()
     assert res["success"] and res["docx_ready"] and "Bold claim stays bold" in res["output"]
-    dl = client.post("/api/download-docx", json={"text": res["output"], "session_docx": r["session_docx"]})
+    dl = client.post("/api/download-docx", json={"text": res["output"], "session_docx": res["download_session"]})
     assert dl.status_code == 200
     d = docx.Document(io.BytesIO(dl.content))
     assert any(run.bold for p in d.paragraphs for run in p.runs)
+
+
+def test_save_formatted_result_preserves_entire_package(sample_docx, tmp_path):
+    target = tmp_path / "download.docx"
+    save_result(target, docx_text(sample_docx), sample_docx)
+    assert target.read_bytes() == sample_docx.read_bytes()
+    # Saving back to the same location is safe, too.
+    save_result(target, docx_text(target), target)
+
+
+def test_save_formatted_result_never_silently_discards_edits(sample_docx, tmp_path):
+    target = tmp_path / "edited.docx"
+    edited = docx_text(sample_docx) + "\n\nAn extra paragraph."
+    with pytest.raises(ValueError, match="edited as plain text"):
+        save_result(target, edited, sample_docx)
+    assert not target.exists()
+    text_target = tmp_path / "edited.md"
+    save_result(text_target, edited, sample_docx)
+    assert text_target.read_text() == edited
+
+
+def test_expired_word_upload_does_not_silently_lose_formatting(client):
+    payload = {"text": AI_TEXT, "session_docx": "0123456789abcdef0123456789abcdef"}
+    assert client.post("/api/jobs", json=payload).status_code == 410
+    assert client.post("/api/humanize", json=payload).status_code == 410
+    assert client.post("/api/download-docx", json=payload).status_code == 410
+
+
+def test_docx_downloads_are_bound_to_each_result(client, sample_docx):
+    upload = client.post("/api/upload", files={"file": ("input.docx", sample_docx.read_bytes())}).json()
+    payload = {"text": upload["text"], "session_docx": upload["session_docx"], "use_gemini": False}
+    first = client.post("/api/humanize", json=payload).json()
+    download = {"text": first["output"], "session_docx": first["download_session"]}
+    original_bytes = client.post("/api/download-docx", json=download).content
+    second = client.post("/api/humanize", json=payload).json()
+    assert first["download_session"] != second["download_session"]
+    assert client.post("/api/download-docx", json=download).content == original_bytes
+    download["text"] += " Edited."
+    assert client.post("/api/download-docx", json=download).status_code == 409
+
+
+def test_provider_fallback_is_reported_in_result(client):
+    result = client.post("/api/humanize", json={"text": AI_TEXT}).json()
+    assert result["engine"] == "rules" and result["warnings"]
+    result = client.post("/api/humanize", json={"text": AI_TEXT, "use_gemini": False}).json()
+    assert not result["warnings"]
 
 
 def test_web_upload_validation(client):

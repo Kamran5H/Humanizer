@@ -1,4 +1,5 @@
 import io
+import json
 import random
 import threading
 import urllib.error
@@ -57,6 +58,91 @@ def test_strip_wrappers():
 def test_check_fidelity(cand, ok):
     src = "The yield was 82% in the trial [3] according to (Smith, 2020), measured with <b id='1'>care</b> and __RUN_LOCKED_0__ intact."
     assert check_fidelity(src, cand)[0] is ok
+
+
+@pytest.mark.parametrize("src,cand,reason", [
+    ("The treatment did not reduce mortality.", "The treatment did reduce mortality.", "negation changed"),
+    ("We observed no benefit.", "We observed benefit.", "negation changed"),
+    ("We didn't observe benefit.", "We did observe benefit.", "negation changed"),
+    ("The yield was 82%.", "The yield was 82% in 2025.", "number changed"),
+    ("Both trials had 82% yield and 82% purity.", "Both trials had 82% yield and purity.", "number changed"),
+])
+def test_fidelity_rejects_negation_and_numeric_changes_even_for_short_text(src, cand, reason):
+    assert check_fidelity(src, cand, short=True) == (False, reason)
+
+
+def test_fidelity_accepts_equivalent_negative_contraction():
+    assert check_fidelity("The treatment did not help.", "The treatment didn't help.", short=True)[0]
+
+
+def test_offline_rewrite_also_checks_negation(monkeypatch, cfg):
+    src = "The treatment did not reduce mortality in the clinical trial."
+    monkeypatch.setattr(engine, "rewrite", lambda text, config: text.replace(" not", ""))
+    assert humanize_text(src, cfg) == src
+    assert cfg.stats["kept"] == 1
+
+
+@pytest.mark.parametrize("candidate", [
+    "A <b id='1'>bold claim stays here.",
+    "A <b id='1'>bold claim</b></b> stays here.",
+    "A <b id='1'>bold claim</b><b id='1'>extra claim</b> stays here.",
+    "A <b id='1'>bold <i id='2'>claim</i></b> stays here.",
+])
+def test_fidelity_rejects_malformed_or_invented_formatting(candidate):
+    assert not check_fidelity("A <b id='1'>bold claim</b> stays here.", candidate, short=True)[0]
+
+
+def test_strict_ai_mode_requires_an_api_key():
+    with pytest.raises(ValueError, match="No AI provider configured"):
+        humanize_text(AI_TEXT, HumanizerConfig(allow_offline_fallback=False))
+
+
+def test_strict_ai_mode_does_not_substitute_offline_output(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+
+    def fail(*args, **kwargs):
+        raise RuntimeError("All LLM providers failed")
+
+    monkeypatch.setattr(engine, "call_llm_pool", fail)
+    config = HumanizerConfig(allow_offline_fallback=False)
+    with pytest.raises(ValueError, match="No safe AI rewrite"):
+        humanize_text(AI_TEXT, config)
+    assert not config.stats.get("rules")
+
+
+def test_anthropic_messages_transport(monkeypatch):
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "test-key")
+    monkeypatch.setenv("ANTHROPIC_MODELS", "chosen-claude-model")
+    seen = []
+
+    def respond(request, timeout):
+        seen.append(request)
+        return io.BytesIO(json.dumps({"content": [{"type": "thinking", "thinking": "private"},
+                                                  {"type": "text", "text": "Rewritten text."}],
+                                     "stop_reason": "end_turn"}).encode())
+
+    monkeypatch.setattr(providers.urllib.request, "urlopen", respond)
+    assert providers.call_llm_pool("Edit this text", temperature=1.2) == "Rewritten text."
+    request = seen[0]
+    assert request.full_url == "https://api.anthropic.com/v1/messages"
+    assert request.get_header("X-api-key") == "test-key"
+    assert request.get_header("Anthropic-version") == "2023-06-01"
+    payload = json.loads(request.data)
+    assert payload["model"] == "chosen-claude-model"
+    assert "temperature" not in payload  # unsupported by newer Claude models
+    assert payload["system"] and payload["messages"] == [{"role": "user", "content": "Edit this text"}]
+
+
+@pytest.mark.parametrize("result", [
+    {"content": [{"type": "text", "text": "Incomplete"}], "stop_reason": "max_tokens"},
+    {"content": [{"type": "thinking", "thinking": "No answer"}], "stop_reason": "end_turn"},
+    {"content": [{"type": "text", "text": "Refused."}], "stop_reason": "refusal"},
+    {"content": [{"type": "text", "text": "Still working."}], "stop_reason": "pause_turn"},
+])
+def test_anthropic_rejects_truncated_or_blank_output(monkeypatch, result):
+    monkeypatch.setattr(providers.urllib.request, "urlopen", lambda *a, **kw: io.BytesIO(json.dumps(result).encode()))
+    with pytest.raises(ValueError):
+        providers._call_endpoint("prompt", 0.9, "https://api.anthropic.com/v1", "claude", "test")
 
 
 def test_llm_path_accepts_faithful_and_rejects_unfaithful(monkeypatch):

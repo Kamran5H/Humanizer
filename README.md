@@ -7,7 +7,37 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-3776AB?logo=python&logoColor=white)](pyproject.toml)
 [![Works offline](https://img.shields.io/badge/Works-offline-10B981)](#offline-and-privacy)
 
-**Rewrite AI-sounding text into natural prose — and see exactly why it sounded like AI.**
+**Rewrite formulaic text into clearer prose, with a local writing-pattern index.**
+
+The index is **not a probability or percentage of AI authorship**, and is not
+calibrated against Turnitin. A result of 13/100 here does not contradict or predict
+an 87% Turnitin report. No rewriting mode guarantees a detector outcome or perfect
+semantic equivalence; review the revised text against the original.
+
+Turnitin defines its percentage over qualifying prose. Its current
+[integration guidance](https://helpcenter.turnitin.com/hc/en-us/articles/49302416618637-How-do-I-display-and-access-the-AI-Writing-score-in-a-custom-API-integration)
+says the AI Writing score is not exposed directly through its Core API. Compare
+against an authorized Turnitin report rather than presenting this local index
+as a Turnitin score.
+
+For Word input, use **Download → Word document (.docx)**. Each result has its own
+download file, independent of later uploads and jobs. The original DOCX package's
+non-document parts (styles, figures, headers, footers, embedded files and other
+metadata) are copied unchanged; body text is updated while retaining paragraph
+and run formatting. Browser jobs also rewrite headings, while reference lists,
+fields, equations and other protected content stay intact. Changed text may reflow
+across lines or pages. **PDF input is text extraction only; original PDF layout
+is not retained.**
+
+Editing the result in the plain-text editor cannot safely update Word formatting.
+TXT/Markdown downloads include those edits; a formatted DOCX download reports a
+conflict rather than silently losing the edits or formatting. To edit the formatted
+result, download it and use Word. **Refine** reuses the formatted Word package
+when the result has not been manually edited.
+
+Studio **AI** mode requires a configured API key and fails clearly if no safe AI
+rewrite is available. **Offline** is an explicit alternative. See [provider setup](PROVIDERS.md)
+for OpenAI, native Claude/Anthropic, and other supported APIs.
 
 [Quick start](#quick-start) · [Web studio](#web-studio) · [Command line](#command-line) · [Python API](#python-api) · [How it works](#how-it-works) · [Providers](PROVIDERS.md)
 
@@ -19,9 +49,9 @@
 
 - **Rewrites** AI-generated drafts so they read like a person wrote them: varied sentence rhythm, plain verbs, no stock phrases.
 - **Explains** the result with a local AI-likelihood score broken into signals you can act on (rhythm, AI vocabulary, formulaic structure, uniformity) and highlights every offending phrase with a suggested fix.
-- **Never changes your facts.** Numbers, units, statistics, citations (`[3]`, `(Smith et al., 2020)`), URLs, DOIs and equations are locked before rewriting and every result is checked against the source. A rewrite that drops or alters any of them is rejected.
-- **Keeps Word formatting.** Bold, italics, colours, fonts, superscript citations, hyperlinks, Zotero/Mendeley/EndNote citation fields, footnotes and images survive. Headings and reference lists are left alone.
-- **Works with or without an API key.** With no key it uses a fast offline rule engine. Add any free key (Groq, Gemini, Cerebras, OpenRouter …) and it switches to an LLM pool with automatic failover, falling back to the offline engine whenever a provider is down.
+- **Checks factual anchors.** Rewrites are checked for numeric changes, dropped citations, changed negation and malformed formatting tokens. These checks reduce errors but cannot prove that meaning is unchanged.
+- **Keeps Word formatting.** Bold, italics, colours, fonts, superscript citations, hyperlinks, Zotero/Mendeley/EndNote citation fields, footnotes and images survive. Studio jobs can rewrite headings; reference lists are left alone.
+- **AI or offline rewriting.** AI mode uses configured providers with automatic failover and reports failures. Select Offline to use the local rule engine without an API key. Legacy scripts may opt into offline fallback.
 - **Two registers.** *Academic* keeps a formal tone and never touches domain terms (catalyst, spectrum, yield, significant, robust …). *General* allows contractions and plainer wording.
 
 ## Quick start
@@ -45,9 +75,9 @@ On Windows you can double-click `run_humanizer.vbs` to start the studio silently
 | | |
 |---|---|
 | **Live analysis** | The score updates as you type. *Highlight* marks every AI pattern and machine-sounding sentence; click a pattern in the sidebar to jump to it. |
-| **Humanize** | Choose register, strength (Light / Balanced / Max) and engine (Auto / Offline), then press **Ctrl + Enter**. Progress is live and **Esc** cancels (the partial result is kept). |
+| **Humanize** | Choose register, strength (Light / Balanced / Max) and engine (AI / Offline), then press **Ctrl + Enter**. Progress is live and **Esc** cancels (the partial result is kept). |
 | **Changes** | Word-level diff of exactly what was rewritten. |
-| **Integrity check** | Confirms every number, citation and link from the source is still present. |
+| **Integrity check** | Reports issues found by basic checks; review the result for meaning and factual accuracy. |
 | **Files** | Drop or open `.docx`, `.pdf`, `.txt` or `.md`. Word files are rewritten in place with their formatting and downloaded as `.docx`. |
 | **Refine** | Moves the result back into the input for another pass. |
 

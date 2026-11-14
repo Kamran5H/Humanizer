@@ -16,7 +16,7 @@ from typing import Optional
 
 from humanizer.config import HumanizerConfig
 from humanizer.detector import score_text
-from humanizer.document import docx_text
+from humanizer.document import docx_text, save_result
 from humanizer.engine import humanize_docx, humanize_text
 
 logger = logging.getLogger(__name__)
@@ -60,9 +60,9 @@ class ResultDialog(tk.Toplevel):
 
         # Row 1: AI Scores
         delta = initial_score - final_score
-        delta_txt = f" (↓ {delta:.1f}% reduction)" if delta > 0 else ""
-        self._add_stat_row(card, "Initial AI Score:", f"{initial_score:.1f}%", row=0)
-        self._add_stat_row(card, "Final AI Score:", f"{final_score:.1f}%{delta_txt}", row=1, val_color=color, val_bold=True)
+        delta_txt = f" (↓ {delta:.1f} points)" if delta > 0 else ""
+        self._add_stat_row(card, "Initial pattern index:", f"{initial_score:.1f}/100", row=0)
+        self._add_stat_row(card, "Final pattern index:", f"{final_score:.1f}/100{delta_txt}", row=1, val_color=color, val_bold=True)
 
         # Row 2: Content volume
         self._add_stat_row(card, "Paragraphs Processed:", f"{para_count} paragraphs", row=2)
@@ -101,9 +101,10 @@ class ResultDialog(tk.Toplevel):
     def _copy_report(self, parent, init_sc, final_sc, words, paras, metrics, duration) -> None:
         rep = (
             f"=== HUMANIZER PRO REPORT ===\n"
+            f"Local writing patterns only; not calibrated against Turnitin.\n"
             f"Verdict:           {(metrics or {}).get('verdict', 'Humanized')}\n"
-            f"Initial AI Score:  {init_sc:.1f}%\n"
-            f"Final AI Score:    {final_sc:.1f}% (Reduction: {init_sc - final_sc:.1f}%)\n"
+            f"Initial pattern index: {init_sc:.1f}/100\n"
+            f"Final pattern index: {final_sc:.1f}/100 (Change: {init_sc - final_sc:.1f} points)\n"
             f"Paragraphs:        {paras}\n"
             f"Words:             {words}\n"
             f"Length variation:  {metrics.get('burstiness', 0.0) if metrics else 0.0}%\n"
@@ -155,6 +156,7 @@ class HumanizerApp(tk.Tk):
         self._start_time = 0.0
         self._initial_score = 0.0
         self._loaded_text: Optional[str] = None
+        self._formatted_result: Optional[Path] = None
         self._web_started = False
         self._build_ui()
 
@@ -192,7 +194,7 @@ class HumanizerApp(tk.Tk):
         hdr.pack(fill="x")
 
         tk.Label(hdr, text="Humanizer Pro", font=self.FONT_DISPLAY, fg=self.PAL["text"], bg=self.PAL["bg"]).pack(anchor="w")
-        tk.Label(hdr, text="Natural rewriting with a local AI-likelihood score", font=self.FONT_SUB, fg=self.PAL["muted"], bg=self.PAL["bg"]).pack(anchor="w")
+        tk.Label(hdr, text="Local writing-pattern index; not calibrated against Turnitin", font=self.FONT_SUB, fg=self.PAL["muted"], bg=self.PAL["bg"]).pack(anchor="w")
 
         # Controls Toolbar
         tb = tk.Frame(self, bg=self.PAL["bg"], padx=24, pady=8)
@@ -218,14 +220,14 @@ class HumanizerApp(tk.Tk):
 
         self.var_register = tk.StringVar(value="Academic")
         self.var_level = tk.StringVar(value="Max")
-        self.var_engine = tk.StringVar(value="Auto")
+        self.var_engine = tk.StringVar(value="AI")
         for label, var, values in (("Register", self.var_register, ("Academic", "General")),
                                    ("Strength", self.var_level, ("Light", "Balanced", "Max")),
-                                   ("Engine", self.var_engine, ("Auto", "Offline"))):
+                                   ("Engine", self.var_engine, ("AI", "Offline"))):
             tk.Label(tb, text=label, font=self.FONT_BTN, fg=self.PAL["muted"], bg=self.PAL["bg"]).pack(side="left", padx=(10, 4))
             ttk.Combobox(tb, textvariable=var, values=values, state="readonly", width=9).pack(side="left")
 
-        self.lbl_score_badge = tk.Label(tb, text="AI Score: —", font=("Segoe UI", 10, "bold"), fg=self.PAL["muted"], bg=self.PAL["bg"])
+        self.lbl_score_badge = tk.Label(tb, text="Pattern index: —", font=("Segoe UI", 10, "bold"), fg=self.PAL["muted"], bg=self.PAL["bg"])
         self.lbl_score_badge.pack(side="right", padx=8)
 
         # Panes
@@ -318,19 +320,18 @@ class HumanizerApp(tk.Tk):
         text = self.txt_out.get("1.0", "end-1c")
         if not text.strip():
             return
-        p = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Text file", "*.txt"), ("Word Document", "*.docx")])
+        p = filedialog.asksaveasfilename(
+            defaultextension=".docx" if self._formatted_result else ".txt",
+            filetypes=[("Word Document", "*.docx"), ("Text file", "*.txt"), ("Markdown", "*.md")],
+        )
         if not p:
             return
         target = Path(p)
-        if target.suffix.lower() == ".docx":
-            import docx
-            doc = docx.Document()
-            for para in text.split("\n\n"):
-                if para.strip():
-                    doc.add_paragraph(para.strip())
-            doc.save(str(target))
-        else:
-            target.write_text(text, encoding="utf-8")
+        try:
+            save_result(target, text, self._formatted_result)
+        except (OSError, ValueError) as exc:
+            messagebox.showerror("Save failed", str(exc))
+            return
         self.lbl_status.config(text=f"Saved to: {target.name}")
 
     def _score_input(self) -> None:
@@ -340,7 +341,7 @@ class HumanizerApp(tk.Tk):
         res = score_text(text)
         sc = res["ai_score"]
         color = self.PAL["green"] if sc < 20.0 else (self.PAL["accent"] if sc < 50.0 else self.PAL["red"])
-        self.lbl_score_badge.config(text=f"AI Score: {sc:.1f}%", fg=color)
+        self.lbl_score_badge.config(text=f"Pattern index: {sc:.1f}/100", fg=color)
 
     def _update_progress(self, current: int, total: int, pct: float, message: str) -> None:
         self.progress_bar["value"] = pct
@@ -366,6 +367,8 @@ class HumanizerApp(tk.Tk):
 
         cfg = HumanizerConfig(
             use_gemini=self.var_engine.get() != "Offline",
+            allow_offline_fallback=False,
+            rewrite_headings=True,
             stealth_level={"Light": 1, "Balanced": 2, "Max": 3}.get(self.var_level.get(), 3),
             scientific=self.var_register.get() == "Academic",
             cancel_event=self._cancel_event,
@@ -395,6 +398,7 @@ class HumanizerApp(tk.Tk):
 
     def _finish_humanize(self, out_text: str, saved_path: Optional[Path]) -> None:
         import time
+        self._formatted_result = saved_path
         duration = time.time() - self._start_time
         self.txt_out.delete("1.0", "end")
         self.txt_out.insert("1.0", out_text)

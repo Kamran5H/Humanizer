@@ -25,7 +25,10 @@ import json
 import logging
 import os
 import re
+import shutil
+import tempfile
 import threading
+import zipfile
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -38,6 +41,53 @@ from docx.shared import RGBColor
 from docx.text.run import Run
 
 logger = logging.getLogger(__name__)
+
+
+def save_result(target: Path, text: str, formatted_result: Optional[Path] = None) -> None:
+    """Save an existing formatted result without rebuilding it from plain text.
+
+    Plain-text edits cannot safely be mapped back to Word runs. Refuse a stale
+    formatted export rather than silently dropping edits or document formatting.
+    """
+    target = Path(target)
+    if target.suffix.lower() != ".docx":
+        target.write_text(text, encoding="utf-8")
+        return
+    if formatted_result is not None:
+        formatted_result = Path(formatted_result)
+        if not formatted_result.is_file():
+            raise ValueError("The formatted result is missing. Rewrite the original document again.")
+        if text != docx_text(formatted_result):
+            raise ValueError("The result was edited as plain text. Save those edits as TXT or Markdown, "
+                             "or restore the original result to download its formatted DOCX.")
+        if target.resolve() != formatted_result.resolve():
+            shutil.copyfile(formatted_result, target)
+        return
+    document = docx.Document()
+    for block in text.split("\n\n"):
+        document.add_paragraph(block)
+    document.save(str(target))
+
+
+def save_docx_package(source: Path, document: _DocxDocument, target: Path) -> None:
+    """Replace the main document XML; copy every other original package part.
+
+    Rewriting body/table text creates no relationships or new package parts.
+    Keeping the source package avoids normalising unrelated styles, headers,
+    figures, embedded files, footnotes, and application-specific metadata.
+    """
+    target = Path(target)
+    with tempfile.NamedTemporaryFile(dir=target.parent, suffix=".docx", delete=False) as handle:
+        temporary = Path(handle.name)
+    try:
+        with zipfile.ZipFile(source) as original, zipfile.ZipFile(temporary, "w") as result:
+            result.comment = original.comment
+            main_part = str(document.part.partname).lstrip("/")
+            for entry in original.infolist():
+                result.writestr(entry, document.part.blob if entry.filename == main_part else original.read(entry))
+        os.replace(temporary, target)
+    finally:
+        temporary.unlink(missing_ok=True)
 
 _SKIP_STYLE_WORDS = ("code", "verbatim", "source", "header", "footer", "toc", "caption",
                      "bibliograph", "reference", "equation", "table of", "index")
@@ -452,7 +502,7 @@ def iter_document_paragraphs(doc: _DocxDocument) -> Generator:
         yield from _iter_table_paragraphs(table, seen)
 
 
-def select_paragraphs(doc: _DocxDocument) -> list:
+def select_paragraphs(doc: _DocxDocument, rewrite_headings: bool = False) -> list:
     """Paragraphs that are safe and worthwhile to rewrite (skips everything after a References heading)."""
     chosen = []
     in_refs = False
@@ -466,7 +516,7 @@ def select_paragraphs(doc: _DocxDocument) -> list:
                 in_refs = False
             else:
                 continue
-        if not _is_heading(p) and not should_skip_paragraph(p):
+        if (rewrite_headings or not _is_heading(p)) and not should_skip_paragraph(p):
             chosen.append(p)
     seen = {id(p._element) for p in doc.paragraphs}
     for table in doc.tables:

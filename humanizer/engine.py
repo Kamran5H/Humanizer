@@ -19,6 +19,7 @@ from __future__ import annotations
 import concurrent.futures as cf
 import logging
 import re
+from collections import Counter
 from pathlib import Path
 from typing import Optional
 
@@ -27,12 +28,15 @@ import docx
 from humanizer.config import HumanizerConfig
 from humanizer.detector import score_text, smooth_sentences
 from humanizer.document import (  # noqa: F401  (re-exported for backwards compatibility)
+    _TOKEN_PATTERN,
     Checkpoint,
     RunStyle,
     _extract_run_style,
+    _is_heading,
     _reconstruct_runs,
     _tag_runs,
     iter_document_paragraphs,
+    save_docx_package,
     select_paragraphs,
     should_skip_paragraph,
 )
@@ -174,6 +178,7 @@ _NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)*(?![\w])")
 _PLACEHOLDER = re.compile(r"__(?:RUN_LOCKED|RUN_PLACEHOLDER|LOCK_[A-Z_]+)_\d+__")
 _TAG_OPEN = re.compile(r"<(bi|b|i|u)\s+id=['\"](\d+)['\"]>", re.IGNORECASE)
 _CITE = re.compile(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]|\([A-Z][A-Za-z'’\-]+(?: et al\.?)?,? (?:19|20)\d{2}[a-z]?\)")
+_NEGATION = re.compile(r"\b(?:not|no|never|neither|nor|without)\b|n['’]t\b", re.IGNORECASE)
 
 
 def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *, short: bool = False) -> tuple[bool, str]:
@@ -182,15 +187,24 @@ def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *
         return False, "empty"
     if _is_thinking_trace(cand):
         return False, "reasoning trace"
-    if set(_PLACEHOLDER.findall(src)) - set(_PLACEHOLDER.findall(cand)):
-        return False, "placeholder dropped"
-    if {m.groups() for m in _TAG_OPEN.finditer(src)} - {m.groups() for m in _TAG_OPEN.finditer(cand)}:
-        return False, "formatting tag dropped"
+    # A conservative safeguard, not a semantic-equivalence test. Word overlap
+    # alone treats 'did reduce' and 'did not reduce' as virtually identical.
+    if len(_NEGATION.findall(src)) != len(_NEGATION.findall(cand)):
+        return False, "negation changed"
+    if _PLACEHOLDER.findall(src) != _PLACEHOLDER.findall(cand):
+        return False, "placeholder changed or reordered"
+    source_tags = [m.groups() for m in _TAG_OPEN.finditer(src)]
+    candidate_tags = [m.groups() for m in _TAG_OPEN.finditer(cand)]
+    complete_tags = [(m.group("tag"), m.group("id")) for m in _TOKEN_PATTERN.finditer(cand) if m.group("tag")]
+    closing_tags = re.findall(r"</(bi|b|i|u)(?:\s+id=['\"]\d+['\"])?\s*>", cand, re.IGNORECASE)
+    if (source_tags != candidate_tags or candidate_tags != complete_tags
+            or Counter(t[0] for t in candidate_tags) != Counter(closing_tags)):
+        return False, "formatting tags changed or malformed"
     if set(_CITE.findall(src)) - set(_CITE.findall(cand)):
         return False, "citation dropped"
-    src_nums = {n.replace(",", "") for n in _NUM.findall(src)}
-    cand_nums = {n.replace(",", "") for n in _NUM.findall(cand)}
-    if src_nums - cand_nums:
+    src_nums = Counter(n.replace(",", "") for n in _NUM.findall(src))
+    cand_nums = Counter(n.replace(",", "") for n in _NUM.findall(cand))
+    if src_nums != cand_nums:
         return False, "number changed"
     if not short:
         sw, cw = len(src.split()), len(cand.split())
@@ -253,7 +267,13 @@ TEXT:
 # ---------------------------------------------------------------------------
 def resolve_engine(cfg: HumanizerConfig) -> str:
     """'llm' when the LLM pool is requested and configured, else 'rules'."""
-    return "llm" if cfg.use_gemini and has_providers() else "rules"
+    if cfg.use_gemini:
+        if has_providers():
+            return "llm"
+        if not cfg.allow_offline_fallback:
+            raise ValueError("No AI provider configured. Add an API key in .env and restart, or select Offline explicitly. "
+                             "ChatGPT/Claude app subscriptions do not configure API access.")
+    return "rules"
 
 
 def humanize_paragraph_rules(text: str, cfg: HumanizerConfig) -> str:
@@ -262,7 +282,13 @@ def humanize_paragraph_rules(text: str, cfg: HumanizerConfig) -> str:
     if not text.strip():
         return text
     cfg.count("rules")
-    return rewrite(text, cfg)
+    candidate = rewrite(text, cfg)
+    ok, reason = check_fidelity(text, candidate, cfg, short=True)
+    if not ok:
+        cfg.count("kept")
+        cfg.status(f"Original paragraph retained: offline rewrite failed the {reason} check.")
+        return text
+    return candidate
 
 
 def _roughen_smooth_sentences(text: str, cfg: HumanizerConfig) -> str:
@@ -346,17 +372,19 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
         hints = [s for _, s, _ in smooth_sentences(best_text, threshold=55.0)[:3]]
 
     if best_text is None:
+        if not cfg.allow_offline_fallback and not cfg.cancelled:
+            raise ValueError("No safe AI rewrite was produced. Check provider status and retry. "
+                             "The request failed or candidates did not preserve the source; no offline substitution was made.")
         cfg.status("LLM unavailable for this paragraph — using offline rules.")
-        cfg.count("rules")
-        return rewrite(text, cfg)
+        return humanize_paragraph_rules(text, cfg)
     cfg.count("llm")
     if not is_short and cfg.stealth_level >= 3 and not cfg.cancelled:
         best_text = _roughen_smooth_sentences(best_text, cfg)
     return best_text
 
 
-def _rewrite_unit(text: str, cfg: HumanizerConfig, engine: str) -> str:
-    if len(re.findall(r"[A-Za-z]{2,}", text)) < MIN_WORDS_TO_REWRITE:
+def _rewrite_unit(text: str, cfg: HumanizerConfig, engine: str, min_words: int = MIN_WORDS_TO_REWRITE) -> str:
+    if len(re.findall(r"[A-Za-z]{2,}", text)) < min_words:
         return text
     if engine == "llm":
         return humanize_paragraph_stealth(text, cfg)
@@ -446,6 +474,8 @@ def humanize_text(text: str, cfg: HumanizerConfig) -> str:
         try:
             res = _rewrite_unit(units[i][1], cfg, engine)
         except Exception as e:  # never lose a paragraph to an unexpected error
+            if engine == "llm" and not cfg.allow_offline_fallback:
+                raise
             logger.exception("Paragraph %d failed: %s", i, e)
             res = units[i][1]
         if not cfg.cancelled:
@@ -489,14 +519,15 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
     src = Path(src)
     doc = docx.Document(str(src))
     target = Path(dst) if dst else src.with_name(f"{src.stem}_humanized{src.suffix}")
-    paras = select_paragraphs(doc)
+    paras = select_paragraphs(doc, rewrite_headings=cfg.rewrite_headings)
     tagged: list[tuple[str, dict]] = [_tag_runs(p) for p in paras]
-    todo = [i for i, (t, _) in enumerate(tagged) if len(re.findall(r"[A-Za-z]{2,}", t)) >= MIN_WORDS_TO_REWRITE]
+    minimums = [2 if cfg.rewrite_headings and _is_heading(p) else MIN_WORDS_TO_REWRITE for p in paras]
+    todo = [i for i, (t, _) in enumerate(tagged) if len(re.findall(r"[A-Za-z]{2,}", t)) >= minimums[i]]
     total = len(todo)
     engine = resolve_engine(cfg)
     cfg.status("Using LLM provider pool" if engine == "llm" else "Using offline rule engine (no API key configured)")
     if total == 0:
-        doc.save(str(target))
+        save_docx_package(src, doc, target)
         cfg.report_progress(1, 1, "Nothing to rewrite")
         return target
 
@@ -514,8 +545,10 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
         if cfg.cancelled:
             return i, t
         try:
-            res = _rewrite_unit(t, cfg, engine)
+            res = _rewrite_unit(t, cfg, engine, min_words=minimums[i])
         except Exception as e:
+            if engine == "llm" and not cfg.allow_offline_fallback:
+                raise
             logger.exception("DOCX paragraph %d failed: %s", i, e)
             res = t
         if not cfg.cancelled:
@@ -543,7 +576,7 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
     if not cfg.cancelled:
         ckpt.clear()
         cfg.report_progress(total, total, "Done")
-    doc.save(str(target))
+    save_docx_package(src, doc, target)
     return target
 
 

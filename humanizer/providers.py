@@ -57,6 +57,7 @@ _FREE_PROVIDER_REGISTRY: list[tuple[str, str, str, str]] = [
     ("MISTRAL_API_KEY", "https://api.mistral.ai/v1", "mistral-small-latest", "Mistral"),
     ("DEEPINFRA_API_KEY", "https://api.deepinfra.com/v1/openai", "meta-llama/Llama-3.3-70B-Instruct", "DeepInfra"),
     ("OPENAI_API_KEY", "https://api.openai.com/v1", "gpt-4o-mini", "OpenAI"),
+    ("ANTHROPIC_API_KEY", "https://api.anthropic.com/v1", "claude-sonnet-4-6", "Anthropic (Claude)"),
 ]
 
 _SYSTEM_PROMPT = (
@@ -241,6 +242,8 @@ def _provider_wait(base_url: str) -> float:
 
 def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, api_key: str,
                    timeout: float = 90.0, max_tokens: Optional[int] = None) -> str:
+    if urllib.parse.urlparse(base_url).hostname == "api.anthropic.com":
+        return _call_anthropic(prompt, temperature, base_url, model, api_key, timeout, max_tokens)
     url = base_url if base_url.endswith("/chat/completions") else base_url + "/chat/completions"
     if max_tokens is None:
         max_tokens = int(max(600, min(4096, len(prompt) / 2.2)))
@@ -282,6 +285,34 @@ def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, a
         raise ValueError(f"Blank content from {base_url} ({model})")
     if choice.get("finish_reason") == "length":
         raise ValueError(f"Truncated output from {model} (finish_reason=length)")
+    return text
+
+
+def _call_anthropic(prompt: str, temperature: float, base_url: str, model: str,
+                    api_key: str, timeout: float, max_tokens: Optional[int]) -> str:
+    """Claude uses the Messages API rather than OpenAI chat completions."""
+    payload = {
+        "model": model,
+        "system": _SYSTEM_PROMPT,
+        "messages": [{"role": "user", "content": prompt}],
+        "max_tokens": max_tokens or int(max(600, min(4096, len(prompt) / 2.2))),
+    }
+    request = urllib.request.Request(
+        base_url.rstrip("/") + "/messages",
+        data=json.dumps(payload).encode("utf-8"), method="POST",
+        headers={"Content-Type": "application/json", "x-api-key": api_key,
+                 "anthropic-version": "2023-06-01", "User-Agent": "HumanizerPro/6.0"},
+    )
+    with urllib.request.urlopen(request, timeout=timeout) as response:
+        result = json.loads(response.read().decode("utf-8"))
+    if result.get("stop_reason") == "max_tokens":
+        raise ValueError(f"Truncated output from {model} (stop_reason=max_tokens)")
+    if result.get("stop_reason") not in ("end_turn", "stop_sequence"):
+        raise ValueError(f"Unfinished or refused response from {model} (stop_reason={result.get('stop_reason')})")
+    text = "".join(block.get("text", "") for block in result.get("content", [])
+                   if block.get("type") == "text").strip()
+    if not text:
+        raise ValueError(f"Blank content from Anthropic ({model})")
     return text
 
 

@@ -44,6 +44,10 @@ _CONTRACTION = re.compile(r"\b\w+['’](?:s|t|re|ve|ll|d|m)\b", re.IGNORECASE)
 # Signal weights (sum to 1 when perplexity is available).
 _W = {"burstiness": 0.28, "vocabulary": 0.30, "structure": 0.20, "uniformity": 0.10, "perplexity": 0.12}
 
+SCORE_EXPLANATION = ("Local writing-pattern index (0–100), not a probability or percentage of AI-written text. "
+                     "Not calibrated against Turnitin; scores from different systems are not directly comparable. "
+                     "A low score does not establish human authorship.")
+
 
 # ---------------------------------------------------------------------------
 # Optional neural perplexity
@@ -159,6 +163,9 @@ def analyze(text: str) -> dict:
     sents = split_sentences(text)
     base = {
         "ai_score": 0.0,
+        "score_type": "writing_pattern_index",
+        "calibrated": False,
+        "score_explanation": SCORE_EXPLANATION,
         "verdict": "Too short to judge",
         "confidence": "low",
         "perplexity": None,
@@ -244,13 +251,13 @@ def analyze(text: str) -> dict:
 
     score = round(max(0.0, min(100.0, score)), 1)
     if score < 20:
-        verdict = "Reads as human-written"
+        verdict = "Few flagged writing patterns"
     elif score < 45:
-        verdict = "Mostly human, a few AI patterns"
+        verdict = "Some flagged writing patterns"
     elif score < 70:
-        verdict = "Mixed — noticeable AI patterns"
+        verdict = "Noticeable formulaic writing patterns"
     else:
-        verdict = "Likely AI-generated"
+        verdict = "Many formulaic writing patterns"
 
     signals = [
         {"key": "burstiness", "label": "Sentence rhythm", "value": round(cv, 2), "ai": round(c_burst * 100),
@@ -306,7 +313,7 @@ def analyze(text: str) -> dict:
 def score_text(text: str) -> dict:
     """Compact score dict (backwards compatible): ai_score, perplexity, burstiness, smooth_frac, ai_tells, sentences, ttr."""
     a = analyze(text)
-    keep = ("ai_score", "verdict", "confidence", "perplexity", "perplexity_source", "burstiness",
+    keep = ("ai_score", "score_type", "calibrated", "score_explanation", "verdict", "confidence", "perplexity", "perplexity_source", "burstiness",
             "smooth_frac", "ai_tells", "sentences", "words", "ttr", "signals")
     out = {k: a[k] for k in keep if k in a}
     if "note" in a:
