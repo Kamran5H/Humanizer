@@ -175,7 +175,7 @@ del{background:var(--del);color:var(--text-2);border-radius:3px;padding:0 1px}
 .modal{position:fixed;inset:0;background:rgba(5,8,12,.5);display:none;place-items:center;z-index:50;padding:16px}
 .modal.on{display:grid}
 .modal-card{width:min(760px,100%);max-height:82vh;overflow:auto;padding:18px}
-.modal-head{display:flex;align-items:center;gap:10px;margin-bottom:12px}
+.modal-head{display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:12px}
 .modal-head h2{margin:0;font-size:17px}
 table{width:100%;border-collapse:collapse;font-size:12.5px}
 th,td{text-align:left;padding:8px 6px;border-bottom:1px solid var(--border)}
@@ -187,7 +187,9 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
 @keyframes up{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
 .foot{max-width:1480px;margin:0 auto;padding:0 20px 24px;color:var(--text-3);font-size:12px;display:flex;gap:16px;flex-wrap:wrap}
 @media (max-width:640px){
-  .top-in{padding:10px 16px}.wrap{padding:12px 16px 32px}.brand small{display:none}
+  .top-in{padding:10px 16px;gap:8px;flex-wrap:wrap}.wrap{padding:12px 16px 32px}.brand small{display:none}
+  .top-in .brand{flex:1}.top-in>.spacer{display:none}.top-in>.icon-btn{flex:none}
+  .top-in .pill{order:3;width:100%;max-width:100%;justify-content:center;white-space:normal}
   .run{margin-left:0;width:100%}.run .btn.primary{flex:1}
   .pane{min-height:380px}
 }
@@ -253,6 +255,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
           <div class="spacer"></div>
           <input type="file" id="file" accept=".docx,.pdf,.txt,.md" class="sr">
           <button class="btn sm ghost" id="btnUpload" title="Open .docx, .pdf, .txt or .md">Open file</button>
+          <button class="btn sm ghost" id="btnRestoreInput" hidden>Restore Word input</button>
           <button class="btn sm ghost" id="btnSample" title="Load sample AI text">Sample</button>
           <button class="btn sm ghost" id="btnClear" title="Clear">Clear</button>
         </div>
@@ -294,6 +297,16 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   </section>
 
   <aside class="side">
+    <div class="card sec">
+      <h3>Trained detector</h3>
+      <p class="sub">Desklib English-text classifier, separate from the writing-pattern index below.</p>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="detectSource" aria-label="Text to check"><option value="original">Original</option><option value="result">Result</option></select>
+        <button class="btn sm" id="btnDetect">Check with model</button>
+      </div>
+      <p id="trainedResult" class="sub" aria-live="polite">Checks run locally after the optional model is installed.</p>
+      <p class="sub">Model score is not the percentage of AI-written words and is not calibrated against Turnitin.</p>
+    </div>
     <div class="card sec">
       <h3>Writing patterns <span class="muted" id="confTag"></span></h3>
       <div class="gauge">
@@ -339,7 +352,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
 <div class="modal" id="provModal" role="dialog" aria-modal="true" aria-labelledby="provTitle">
   <div class="card modal-card">
     <div class="modal-head"><h2 id="provTitle">LLM providers</h2><div class="spacer"></div>
-      <button class="btn sm" id="btnResetCd">Reset cooldowns</button><button class="btn sm" id="btnRefreshProv">Refresh</button><button class="icon-btn" id="btnCloseProv" aria-label="Close">✕</button></div>
+      <button class="btn sm" id="btnCheckProviders">Test connections</button><button class="btn sm" id="btnResetCd">Reset cooldowns</button><button class="btn sm" id="btnRefreshProv">Refresh</button><button class="icon-btn" id="btnCloseProv" aria-label="Close">✕</button></div>
     <p class="muted" id="provNote" style="margin-top:0"></p>
     <table><thead><tr><th>Provider</th><th>Model</th><th>Status</th></tr></thead><tbody id="provBody"></tbody></table>
   </div>
@@ -355,7 +368,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   };
   const state = {
     register: store.get('register', 'academic'), level: store.get('level', '3'), engine: store.get('engine', 'auto'),
-    jobSource: null, jobFileName: null, sessionDocx: null, fileName: null, jobId: null, polling: null, lastResult: null, inputAnalysis: null, health: null,
+    jobSource: null, jobFileName: null, documentText: null, sessionDocx: null, fileName: null, jobId: null, polling: null, lastResult: null, inputAnalysis: null, health: null,
   };
 
   // ---------- helpers ----------
@@ -407,8 +420,9 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
       const list = await api('/api/providers');
       $('provNote').innerHTML = list.length ? 'Configured does not mean connection-tested. Requests try eligible endpoints and show failures here.'
         : 'No API keys found. Select Offline explicitly, or add <code>ANTHROPIC_API_KEY</code>, <code>OPENAI_API_KEY</code> or another supported key to a <code>.env</code> file and restart (see PROVIDERS.md).';
+      for (const warning of (state.health && state.health.provider_warnings) || []) $('provNote').innerHTML += `<br>${esc(warning)}`;
       body.innerHTML = list.map((p) => {
-        const st = p.status === 'ready' ? '<span class="chip good">configured</span>' : p.status === 'throttled' ? '<span class="chip warn">pacing</span>'
+        const st = p.status === 'ready' ? `<span class="chip good">${p.last_success_at ? 'connection tested' : 'configured'}</span>` : p.status === 'throttled' ? '<span class="chip warn">pacing</span>'
           : `<span class="chip bad" title="${esc(p.last_error || '')}">cooling ${Math.ceil(p.cooldown_remaining_sec)}s</span>`;
         return `<tr><td>${esc(p.name)}</td><td><code>${esc(p.model)}</code></td><td>${st}</td></tr>`;
       }).join('') || '<tr><td colspan="3" class="muted">No providers configured.</td></tr>';
@@ -418,6 +432,13 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   $('btnCloseProv').onclick = () => $('provModal').classList.remove('on');
   $('provModal').onclick = (e) => { if (e.target === $('provModal')) $('provModal').classList.remove('on'); };
   $('btnRefreshProv').onclick = () => { loadProviders(); loadHealth(); };
+  $('btnCheckProviders').onclick = async () => {
+    const button = $('btnCheckProviders'); button.disabled = true; button.textContent = 'Testing…';
+    $('provNote').textContent = 'Sending a small connection-test prompt to each configured endpoint. Document text is not used.';
+    try { await api('/api/providers/check', {method: 'POST'}); await loadProviders(); await loadHealth(); }
+    catch (error) { toast(error.message, true); }
+    finally { button.disabled = false; button.textContent = 'Test connections'; }
+  };
   $('btnResetCd').onclick = async () => { await api('/api/reset-cooldowns', {method: 'POST'}); toast('Cooldowns cleared'); loadProviders(); loadHealth(); };
 
   // ---------- input & analysis ----------
@@ -436,7 +457,34 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
       } catch (e) { /* ignore transient errors while typing */ }
     }, 450);
   }
-  txtIn.addEventListener('input', () => { updateInStats(); store.set('draft', txtIn.value.slice(0, 200000)); if (state.sessionDocx) { state.sessionDocx = null; $('fileTag').textContent = ''; } scheduleAnalyze(); });
+  function syncWordPreview() {
+    const changed = state.sessionDocx && txtIn.value !== state.documentText;
+    $('btnRestoreInput').hidden = !changed;
+    if (state.sessionDocx) $('fileTag').textContent = changed ? 'Edited preview — restore Word input to keep formatting' : `📄 ${state.fileName} · DOCX formatting retained when downloaded`;
+  }
+  txtIn.addEventListener('input', () => { updateInStats(); store.set('draft', txtIn.value.slice(0, 200000)); syncWordPreview(); scheduleAnalyze(); });
+  $('btnRestoreInput').onclick = () => { txtIn.value = state.documentText; clearTrainedCheck(); syncWordPreview(); updateInStats(); scheduleAnalyze(); };
+
+  // Trained inference is explicit: it may take time on CPU and never replaces
+  // a failed model check with a hand-written pattern score.
+  let trainedChecked = false;
+  function clearTrainedCheck() {
+    if (trainedChecked) $('trainedResult').textContent = 'Text changed — run the trained check again.';
+  }
+  txtIn.addEventListener('input', clearTrainedCheck); txtOut.addEventListener('input', clearTrainedCheck);
+  $('detectSource').onchange = clearTrainedCheck;
+  $('btnDetect').onclick = async () => {
+    const source = $('detectSource').value, text = source === 'result' ? txtOut.value : txtIn.value;
+    const button = $('btnDetect'); button.disabled = true; trainedChecked = true;
+    $('trainedResult').textContent = 'Checking with the trained model… This may take time on CPU.';
+    try {
+      const r = await api('/api/detect', {method: 'POST', body: JSON.stringify({text})});
+      const current = source === 'result' ? txtOut.value : txtIn.value;
+      if (text !== current || source !== $('detectSource').value) { clearTrainedCheck(); return; }
+      $('trainedResult').textContent = `${source === 'result' ? 'Result' : 'Original'}: ${r.model_score}/100 classifier score. ${r.label}. ${r.windows.length} token windows checked; all ${r.tokens.toLocaleString()} tokens checked.`;
+    } catch (error) { $('trainedResult').textContent = error.message; }
+    finally { button.disabled = false; }
+  };
 
   function renderAnalysis(a, before) {
     const ring = $('ringVal'), C = 295.3;
@@ -531,7 +579,8 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   async function run() {
     const text = txtIn.value;
     if (!text.trim() && !state.sessionDocx) { toast('Paste some text or open a file first.', true); txtIn.focus(); return; }
-    if (state.jobId) return;
+    if (state.sessionDocx && text !== state.documentText) { toast('Restore Word input, or edit the original document in Word and upload it again to retain formatting.', true); return; }
+    if (state.jobId || $('btnRun').disabled) return;
     state.jobSource = text; state.jobFileName = state.fileName;
     setBusy(true);
     try {
@@ -553,14 +602,18 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   }
   async function showResult(r, source) {
     if (!r) return;
+    clearTrainedCheck();
     state.lastResult = { ...r, source, fileName: state.jobFileName };
+    const displayedResult = state.lastResult;
     txtOut.value = r.output; $('outEmpty').style.display = 'none';
     ['btnCopy', 'btnExport', 'btnReuse'].forEach((id) => $(id).disabled = false);
     $('statsOut').textContent = `${wc(r.output).toLocaleString()} words`;
     $('metaOut').textContent = `${({llm: 'AI rewrite', mixed: 'AI rewrite + offline fallback', rules: 'Offline rules'})[r.engine] || r.engine} · ${r.duration}s`;
     setChip($('chipOut'), r.final_score);
-    try { const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text: r.output})}); renderAnalysis(a, r.initial_score); renderTells(a); }
-    catch { renderAnalysis({...r.after, readability: null}, r.initial_score); }
+    try { const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text: r.output})});
+      if (state.lastResult !== displayedResult || txtOut.value !== r.output) return;
+      renderAnalysis(a, r.initial_score); renderTells(a); }
+    catch { if (state.lastResult !== displayedResult || txtOut.value !== r.output) return; renderAnalysis({...r.after, readability: null}, r.initial_score); }
     const checks = r.integrity || []; const errs = checks.filter((c) => c.severity === 'error');
     $('integrityCard').hidden = false;
     $('checks').innerHTML = (errs.length ? '' : '<li><span class="ic ok-ic">✓</span><span>No issues found by basic checks; review meaning and facts</span></li>')
@@ -601,7 +654,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
       } catch (error) { toast(error.message, true); }
       return;
     }
-    txtIn.value = txtOut.value; state.sessionDocx = null; state.fileName = null; $('fileTag').textContent = '';
+    clearTrainedCheck(); $('btnRestoreInput').hidden = true; txtIn.value = txtOut.value; state.sessionDocx = null; state.fileName = null; $('fileTag').textContent = '';
     updateInStats(); store.set('draft', txtIn.value); scheduleAnalyze(); toast('Result moved to input — press Humanize to refine again.');
   };
   $('btnExport').onclick = (e) => { e.stopPropagation(); $('exportMenu').classList.toggle('on'); };
@@ -624,6 +677,8 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     try {
       const r = await api('/api/upload', {method: 'POST', body: fd});
       txtIn.value = r.text; state.sessionDocx = r.session_docx; state.fileName = r.filename;
+      state.documentText = r.session_docx ? r.text : null; syncWordPreview();
+      clearTrainedCheck();
       $('fileTag').textContent = r.session_docx ? `📄 ${r.filename} · DOCX formatting retained when downloaded` : `📄 ${r.filename}${/\.pdf$/i.test(r.filename) ? ' · text only; PDF layout is not retained' : ''}`;
       updateInStats(); scheduleAnalyze(); showTab('edit');
     } catch (e) { toast(e.message, true); }
@@ -636,8 +691,9 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
   dz.addEventListener('dragleave', () => { if (--dragDepth <= 0) { dragDepth = 0; $('dropOverlay').classList.remove('on'); } });
   dz.addEventListener('drop', (e) => { e.preventDefault(); dragDepth = 0; $('dropOverlay').classList.remove('on'); if (e.dataTransfer.files[0]) openFile(e.dataTransfer.files[0]); });
 
-  $('btnClear').onclick = () => { txtIn.value = ''; state.sessionDocx = null; state.fileName = null; $('fileTag').textContent = ''; store.set('draft', ''); updateInStats(); scheduleAnalyze(); txtIn.focus(); };
+  $('btnClear').onclick = () => { clearTrainedCheck(); $('btnRestoreInput').hidden = true; txtIn.value = ''; state.sessionDocx = null; state.fileName = null; $('fileTag').textContent = ''; store.set('draft', ''); updateInStats(); scheduleAnalyze(); txtIn.focus(); };
   $('btnSample').onclick = () => {
+    clearTrainedCheck(); state.fileName = null; $('btnRestoreInput').hidden = true;
     txtIn.value = "In today's fast-paced world, artificial intelligence has emerged as a transformative force in healthcare, revolutionizing the way clinicians diagnose, treat, and manage patient care. Furthermore, it is important to note that machine learning algorithms can analyze vast amounts of medical data, thereby enabling earlier detection of diseases such as cancer.\n\nMoreover, AI-powered tools not only improve diagnostic accuracy but also reduce costs — a testament to their pivotal role in modern medicine. A 2023 study reported a 23% reduction in reading time [4]. As we navigate the complexities of this ever-evolving landscape, it is crucial that stakeholders foster collaboration, ensuring patient safety and privacy remain paramount. The future looks bright.";
     state.sessionDocx = null; $('fileTag').textContent = ''; updateInStats(); store.set('draft', txtIn.value); scheduleAnalyze();
   };

@@ -227,6 +227,14 @@ def test_expired_word_upload_does_not_silently_lose_formatting(client):
     assert client.post("/api/download-docx", json=payload).status_code == 410
 
 
+def test_edited_word_input_is_not_silently_ignored(client, sample_docx):
+    upload = client.post("/api/upload", files={"file": ("input.docx", sample_docx.read_bytes())}).json()
+    response = client.post("/api/humanize", json={"text": upload["text"] + " A manual edit.",
+                                                 "session_docx": upload["session_docx"], "use_gemini": False})
+    assert response.status_code == 409
+    assert "preview was edited" in response.json()["detail"]
+
+
 def test_docx_downloads_are_bound_to_each_result(client, sample_docx):
     upload = client.post("/api/upload", files={"file": ("input.docx", sample_docx.read_bytes())}).json()
     payload = {"text": upload["text"], "session_docx": upload["session_docx"], "use_gemini": False}

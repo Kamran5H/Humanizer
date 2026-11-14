@@ -29,26 +29,61 @@ fields, equations and other protected content stay intact. Changed text may refl
 across lines or pages. **PDF input is text extraction only; original PDF layout
 is not retained.**
 
-Editing the result in the plain-text editor cannot safely update Word formatting.
+Editing a Word preview as plain text cannot safely update its Word formatting.
+If you change the input preview, use **Restore Word input** or edit and re-upload
+the original document; the app will not silently flatten or ignore your edits.
+Editing the result in the plain-text editor has the same limitation.
 TXT/Markdown downloads include those edits; a formatted DOCX download reports a
 conflict rather than silently losing the edits or formatting. To edit the formatted
 result, download it and use Word. **Refine** reuses the formatted Word package
 when the result has not been manually edited.
 
-Studio **AI** mode requires a configured API key and fails clearly if no safe AI
+Studio **AI** mode requires a configured provider and fails clearly if no safe AI
 rewrite is available. **Offline** is an explicit alternative. See [provider setup](PROVIDERS.md)
 for OpenAI, native Claude/Anthropic, and other supported APIs.
 
+You can also configure **OmniRoute**, **FreeLLMAPI**, or explicitly enable
+OVHcloud's anonymous free tier. These routes use the same provider rotation,
+cooldowns, cancellation-aware pacing and error reporting. See [free and gateway setup](PROVIDERS.md#omniroute-and-freellmapi-gateways).
+
+## Optional trained detection
+
+The Studio's **Trained detector** runs the MIT-licensed
+[Desklib detector](https://github.com/desklib/ai-text-detector), independently of
+the writing-pattern rules. Install its optional dependencies and pinned model:
+
+```bash
+pip install -e '.[detection]'
+python -m humanizer.neural_detector --download
+```
+
+For CPU-only PyTorch, install `torch` from the official CPU wheel index first:
+`pip install torch --index-url https://download.pytorch.org/whl/cpu`.
+The model download is about 1.7 GB. It runs locally, checks the whole input in
+token windows, and does not silently truncate a long document to its first page.
+The explicit check accepts 40+ words and up to 100,000 characters. Larger texts
+must be split into sections. Model installation is explicit; page loads and
+health checks never download model weights.
+
+Its displayed value is a token-weighted classifier score, **not the percentage
+of AI-written words**. Intermediate scores (20–80) are shown as inconclusive;
+this display band is not a calibrated accuracy claim. This is an English-text
+model and still needs evaluation on your own human, AI and edited examples.
+For evaluation, [RAID](https://github.com/liamdugan/raid) provides a shared
+benchmark; [Binoculars](https://github.com/ahans30/Binoculars) is another research
+detector, but its default inference requires two Falcon-7B models. Neither
+establishes equivalence to Turnitin.
+
 [Quick start](#quick-start) · [Web studio](#web-studio) · [Command line](#command-line) · [Python API](#python-api) · [How it works](#how-it-works) · [Providers](PROVIDERS.md)
 
-<img src="docs/screenshot.png" alt="Humanizer Pro studio: original text with highlighted AI patterns, rewritten text with tracked changes, and an AI-likelihood score that dropped from 72% to 32%" width="900">
+<img src="docs/screenshot.png" alt="Humanizer Pro studio: original text with highlighted writing patterns, rewritten text with tracked changes, and a local pattern index" width="900">
 
 </div>
 
 ## What it does
 
 - **Rewrites** AI-generated drafts so they read like a person wrote them: varied sentence rhythm, plain verbs, no stock phrases.
-- **Explains** the result with a local AI-likelihood score broken into signals you can act on (rhythm, AI vocabulary, formulaic structure, uniformity) and highlights every offending phrase with a suggested fix.
+- **Explains** the result with a local writing-pattern index broken into signals you can inspect (rhythm, AI vocabulary, formulaic structure, uniformity) and highlights every offending phrase with a suggested fix.
 - **Checks factual anchors.** Rewrites are checked for numeric changes, dropped citations, changed negation and malformed formatting tokens. These checks reduce errors but cannot prove that meaning is unchanged.
 - **Keeps Word formatting.** Bold, italics, colours, fonts, superscript citations, hyperlinks, Zotero/Mendeley/EndNote citation fields, footnotes and images survive. Studio jobs can rewrite headings; reference lists are left alone.
 - **AI or offline rewriting.** AI mode uses configured providers with automatic failover and reports failures. Select Offline to use the local rule engine without an API key. Legacy scripts may opt into offline fallback.
@@ -143,9 +178,9 @@ flowchart LR
 | Em-dash overuse | *X — Y — Z* | commas |
 | Generic conclusions | *The future looks bright.* | delete |
 
-**Detector.** The local score blends sentence-length burstiness, weighted pattern density, formulaic structure and uniformity, plus GPT-2 perplexity when `torch` and `transformers` are installed. On the bundled corpus, AI samples score 84–93% and human-written samples 0–20%. It is an *estimate*: it explains what makes text read as machine-written, but it does not guarantee what any third-party detector will say.
+**Pattern index.** The local index blends sentence-length variation, weighted phrase density, structure and uniformity. The optional GPT-2 signal is used only when its dependencies and cached model weights are already available. The bundled samples are regression fixtures, not an independent accuracy benchmark. The separate trained detector above provides a learned model signal, also without a Turnitin-equivalence claim.
 
-**LLM pipeline.** Each paragraph is rewritten by a rotating persona with explicit style rules. At *Balanced* and *Max*, several candidates are scored and the most natural one is kept. *Max* then re-rolls the individual sentences that still read as robotic. Every candidate must pass the fidelity gate; if none does, the paragraph falls back to the offline engine.
+**LLM pipeline.** Each paragraph is rewritten with instructions to retain facts, qualifiers and source formatting tokens. At *Balanced* and *Max*, the lowest local pattern index among candidates that pass basic fidelity checks is selected; this does not establish authorship or external detector performance. *Max* can refine individual sentences. Model output is not passed through the offline substitution pipeline. Interactive AI mode reports a failure if no safe candidate is produced; legacy clients may explicitly allow offline fallback.
 
 ## Offline and privacy
 
@@ -161,7 +196,8 @@ humanizer/
   patterns.py   AI-writing pattern catalogue (single source of truth)
   rules.py      offline rewriter: locking, substitutions, structure repairs, grammar
   engine.py     LLM + offline orchestration, fidelity gate, text & DOCX pipelines
-  detector.py   explainable AI-likelihood scoring
+  detector.py   explainable writing-pattern index
+  neural_detector.py optional pinned trained classifier
   providers.py  multi-provider LLM pool with failover and cooldowns
   document.py   DOCX tagging/rebuild, PDF/TXT/MD extraction, checkpoints
   lint.py       integrity and grammar checks, readability

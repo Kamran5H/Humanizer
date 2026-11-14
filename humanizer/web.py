@@ -36,7 +36,15 @@ from humanizer.detector import analyze, model_available, score_text
 from humanizer.document import docx_text, extract_text_from_file
 from humanizer.engine import humanize_docx, humanize_text
 from humanizer.lint import lint_text, readability
-from humanizer.providers import available_count, get_provider_status, has_providers, reset_cooldowns
+from humanizer.neural_detector import detect, detector_status
+from humanizer.providers import (
+    available_count,
+    check_connections,
+    configuration_warnings,
+    get_provider_status,
+    has_providers,
+    reset_cooldowns,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -162,6 +170,9 @@ def _run_humanize(req: HumanizeRequest, cancel: Optional[threading.Event] = None
     download_session = None
     if src_doc is not None:
         source_text = docx_text(src_doc)
+        if req.text and req.text != source_text:
+            raise HTTPException(status_code=409, detail="The Word preview was edited as plain text. Restore the Word input "
+                                "or edit the original file in Word and upload it again to retain formatting.")
         download_session = uuid.uuid4().hex
         out_doc = _session_path(download_session, "_humanized.docx")
         humanize_docx(src_doc, cfg, dst=out_doc)
@@ -240,6 +251,7 @@ def api_health() -> dict:
         "llm_configured": has_providers(),
         "llm_ready": available_count(),
         "perplexity_model": model_available(),
+        "provider_warnings": configuration_warnings(),
     }
 
 
@@ -260,6 +272,17 @@ def api_score(req: TextRequest) -> dict:
     read = readability(text)
     return {**scores, "flesch": read.get("flesch"), "words": len(text.split()), "chars": len(text),
             "lint_issues": lint_text(text)[:5] if text else []}
+
+
+@app.get("/api/detector")
+def api_detector_status() -> dict:
+    return detector_status()
+
+
+@app.post("/api/detect")
+def api_detect(req: TextRequest) -> dict:
+    """Explicit trained-model check; never substitute the local pattern index."""
+    return detect(req.text)
 
 
 @app.post("/api/jobs")
@@ -380,6 +403,11 @@ def api_download_docx(req: DownloadDocxRequest):
 @app.get("/api/providers")
 def api_providers() -> list[dict]:
     return get_provider_status()
+
+
+@app.post("/api/providers/check")
+def api_check_providers() -> list[dict]:
+    return check_connections()
 
 
 @app.post("/api/reset-cooldowns")

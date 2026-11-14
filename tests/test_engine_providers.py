@@ -48,6 +48,11 @@ def test_strip_wrappers():
     assert _strip_wrappers(raw) == "The result holds."
 
 
+def test_llm_cleanup_does_not_rewrite_the_model_output_with_offline_rules(cfg):
+    text = "Our robust mechanism remains stable, resulting in a higher yield under the tested conditions."
+    assert engine._clean_rewrite(text, text, cfg) == text
+
+
 @pytest.mark.parametrize("cand,ok", [
     ("The yield reached 82% in trial [3], per (Smith, 2020), with <b id='1'>care</b> and __RUN_LOCKED_0__ kept intact.", True),
     ("The yield reached 85% in trial [3], per (Smith, 2020), with <b id='1'>care</b> and __RUN_LOCKED_0__ kept intact.", False),
@@ -66,6 +71,7 @@ def test_check_fidelity(cand, ok):
     ("We didn't observe benefit.", "We did observe benefit.", "negation changed"),
     ("The yield was 82%.", "The yield was 82% in 2025.", "number changed"),
     ("Both trials had 82% yield and 82% purity.", "Both trials had 82% yield and purity.", "number changed"),
+    ("The treatment may improve outcomes.", "The treatment improves outcomes.", "uncertainty changed"),
 ])
 def test_fidelity_rejects_negation_and_numeric_changes_even_for_short_text(src, cand, reason):
     assert check_fidelity(src, cand, short=True) == (False, reason)
@@ -73,6 +79,8 @@ def test_fidelity_rejects_negation_and_numeric_changes_even_for_short_text(src, 
 
 def test_fidelity_accepts_equivalent_negative_contraction():
     assert check_fidelity("The treatment did not help.", "The treatment didn't help.", short=True)[0]
+    assert check_fidelity("The treatment not only helped but also reduced costs.",
+                          "The treatment helped and reduced costs.", short=True)[0]
 
 
 def test_offline_rewrite_also_checks_negation(monkeypatch, cfg):
@@ -215,7 +223,10 @@ def test_ambient_github_token_is_not_used(monkeypatch):
     monkeypatch.setenv("GITHUB_TOKEN", "ghp_ambient")
     assert providers._build_pool() == []
     providers._FILE_KEYS.add("GITHUB_TOKEN")
-    assert providers._build_pool()[0]["name"] == "GitHub Models"
+    assert providers._build_pool() == []
+    assert "retired" in providers.configuration_warnings()[0]
+    monkeypatch.setenv("GITHUB_MODELS_TOKEN", "legacy-models-key")
+    assert providers._build_pool() == []
 
 
 def test_failover_and_cooldown(monkeypatch):
@@ -259,3 +270,80 @@ def test_reserve_slot_spaces_calls_without_blocking(monkeypatch):
     b = providers._reserve_slot("https://a.example/v1")
     other = providers._reserve_slot("https://b.example/v1")
     assert a == 0 and 1.9 < b <= 2.0 and other == 0
+
+
+def test_gateway_configuration_and_rotation(monkeypatch):
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "omni-test")
+    monkeypatch.setenv("OMNIROUTE_MODELS", "combo-editor,claude-route")
+    monkeypatch.setenv("FREELLMAPI_API_KEY", "free-test")
+    monkeypatch.setenv("FREELLMAPI_MODELS", "auto:reliable")
+    pool = providers._build_pool()
+    assert [(p["name"], p["model"]) for p in pool] == [
+        ("OmniRoute", "combo-editor"), ("OmniRoute", "claude-route"), ("FreeLLMAPI", "auto:reliable"),
+    ]
+    assert pool[0]["base_url"] == "http://127.0.0.1:20128/v1"
+    assert pool[2]["base_url"] == "http://127.0.0.1:3001/v1"
+    calls = []
+    monkeypatch.setattr(providers, "_call_endpoint", lambda prompt, temp, base, model, key, **kwargs: calls.append(model) or "OK")
+    for _ in range(3):
+        assert providers.call_llm_pool("test") == "OK"
+    assert set(calls) == {"combo-editor", "claude-route", "auto:reliable"}
+    assert all(p["last_success_at"] for p in providers.get_provider_status())
+
+
+def test_anonymous_free_provider_is_opt_in_and_paced_per_model(monkeypatch):
+    assert not providers._build_pool()
+    monkeypatch.setenv("HUMANIZER_ENABLE_OVH_ANONYMOUS", "1")
+    monkeypatch.setenv("OVH_MODELS", "model-a,model-b")
+    assert len(providers._build_pool()) == 2
+    base = "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1"
+    assert providers._reserve_slot(base, "model-a") == 0
+    assert providers._reserve_slot(base, "model-b") == 0
+    assert 30.0 < providers._reserve_slot(base, "model-a") <= 30.1
+
+
+def test_anonymous_requests_have_no_fake_authorization_header(monkeypatch):
+    def respond(request, **kwargs):
+        assert request.get_header("Authorization") is None
+        return io.BytesIO(json.dumps({"choices": [{"message": {"content": "OK"}, "finish_reason": "stop"}]}).encode())
+
+    monkeypatch.setattr(providers.urllib.request, "urlopen", respond)
+    assert providers._call_endpoint("test", 0, "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", "model", "anonymous") == "OK"
+
+
+def test_cancelled_request_does_not_mark_provider_as_broken(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test")
+    monkeypatch.setenv("GROQ_MODELS", "model")
+    event = threading.Event()
+
+    def cancel(*args, **kwargs):
+        event.set()
+        raise RuntimeError("Cancelled")
+
+    monkeypatch.setattr(providers, "_call_endpoint", cancel)
+    with pytest.raises(RuntimeError, match="Cancelled"):
+        providers.call_llm_pool("test", HumanizerConfig(cancel_event=event))
+    assert not providers._COOLDOWNS
+
+
+def test_omniroute_missing_model_is_explained(monkeypatch):
+    monkeypatch.setenv("OMNIROUTE_API_KEY", "test")
+    assert "OMNIROUTE_MODELS" in providers.configuration_warnings()[0]
+
+
+def test_connection_probe_records_real_success_and_auth_failure(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "not-a-real-key")
+    monkeypatch.setenv("GROQ_MODELS", "good,bad")
+
+    def endpoint(prompt, temp, base, model, key, **kwargs):
+        assert "OK" in prompt and kwargs["max_tokens"] == 128
+        if model == "bad":
+            raise urllib.error.HTTPError(base, 401, "bad key", {}, io.BytesIO(b"Unauthorized"))
+        return "OK"
+
+    monkeypatch.setattr(providers, "_call_endpoint", endpoint)
+    statuses = {p["model"]: p for p in providers.check_connections()}
+    assert statuses["good"]["last_success_at"]
+    assert statuses["bad"]["status"] == "cooling_down"
+    assert "auth failed" in statuses["bad"]["last_error"]
+    assert all("api_key" not in entry for entry in statuses.values())

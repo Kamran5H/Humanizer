@@ -1,8 +1,8 @@
 """
-Local, explainable AI-likelihood scorer.
+Local, explainable writing-pattern index.
 
-The score is an ensemble of signals that commercial detectors and the
-Wikipedia "Signs of AI writing" guide both rely on:
+These heuristic signals describe stylistic regularities. They are not
+calibrated authorship probabilities or a reproduction of a commercial detector:
 
 * **Burstiness** — humans vary sentence length a lot; LLMs write evenly.
 * **AI vocabulary & stock phrases** — weighted hits from :mod:`humanizer.patterns`.
@@ -58,11 +58,19 @@ def _load_model():
     _TORCH_STATE["loaded"] = True
     _TORCH_STATE["bundle"] = None
     try:
+        from huggingface_hub import try_to_load_from_cache
+
+        # Installing the trained detector should not make lightweight pattern
+        # analysis import PyTorch merely to discover DistilGPT-2 is absent.
+        weights = [try_to_load_from_cache(_MODEL_NAME, name) for name in ("model.safetensors", "pytorch_model.bin")]
+        if not any(isinstance(path, str) for path in weights):
+            return None
         import torch  # type: ignore
         from transformers import AutoModelForCausalLM, AutoTokenizer  # type: ignore
 
-        tok = AutoTokenizer.from_pretrained(_MODEL_NAME)
-        model = AutoModelForCausalLM.from_pretrained(_MODEL_NAME)
+        # Analysis and /api/health must not trigger surprise model downloads.
+        tok = AutoTokenizer.from_pretrained(_MODEL_NAME, local_files_only=True)
+        model = AutoModelForCausalLM.from_pretrained(_MODEL_NAME, local_files_only=True)
         model.eval()
         device = "cuda" if torch.cuda.is_available() else "cpu"
         model.to(device)

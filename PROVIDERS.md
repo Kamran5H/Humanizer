@@ -2,8 +2,9 @@
 
 Humanizer Pro works without any API key: it then uses its offline rule engine. Add one or more keys
 and it rewrites with an LLM instead, rotating across every configured provider and failing over
-automatically when one is rate-limited, out of daily quota or down. If every provider fails, the
-paragraph is still rewritten by the offline engine, so a job never stalls.
+automatically when one is rate-limited, out of daily quota or down. Fallback to
+offline rules is available to legacy clients; the interactive apps require AI
+in AI mode and report a failure if no safe AI rewrite is available.
 
 The browser Studio's **AI** mode requires an AI response and does **not** silently
 switch to offline rules. Provider errors or rejected rewrites fail the job with
@@ -25,11 +26,10 @@ and fill in any keys you have. Restart the app. Environment variables work too.
 |---|---|---|---|---|
 | `GROQ_API_KEY` | Groq | `llama-3.3-70b-versatile`, `llama-3.1-8b-instant` | yes | <https://console.groq.com/keys> |
 | `GEMINI_API_KEY` | Google Gemini | `gemini-2.5-flash`, `gemini-2.5-flash-lite` | yes | <https://aistudio.google.com/apikey> |
-| `CEREBRAS_API_KEY` | Cerebras | `llama-3.3-70b` | yes | <https://cloud.cerebras.ai> |
-| `OPENROUTER_API_KEY` | OpenRouter | several `:free` models | yes | <https://openrouter.ai/keys> |
+| `CEREBRAS_API_KEY` | Cerebras | `gpt-oss-120b` | yes | <https://cloud.cerebras.ai> |
+| `OPENROUTER_API_KEY` | OpenRouter | `openrouter/free` | yes | <https://openrouter.ai/keys> |
 | `SAMBANOVA_API_KEY` | SambaNova | `Meta-Llama-3.3-70B-Instruct` | yes | <https://cloud.sambanova.ai> |
 | `MISTRAL_API_KEY` | Mistral | `mistral-small-latest` | yes | <https://console.mistral.ai> |
-| `GITHUB_MODELS_TOKEN` | GitHub Models | `gpt-4o-mini`, `Meta-Llama-3.3-70B-Instruct` | yes | fine-grained token with *models: read* |
 | `TOGETHER_API_KEY` | Together | `Llama-3.3-70B-Instruct-Turbo` | trial credit | <https://api.together.ai> |
 | `DEEPINFRA_API_KEY` | DeepInfra | `Llama-3.3-70B-Instruct` | trial credit | <https://deepinfra.com/dash> |
 | `OPENAI_API_KEY` | OpenAI | `gpt-4o-mini` | paid | <https://platform.openai.com/api-keys> |
@@ -38,9 +38,7 @@ and fill in any keys you have. Restart the app. Environment variables work too.
 Free tiers and model names change often; check each provider's page if a model stops working.
 A model that returns *not found* is disabled for 12 hours and the pool moves on.
 
-A `GITHUB_TOKEN` that is merely present in your shell or CI is deliberately **not** used, so your
-documents are never sent to GitHub Models by accident. Use `GITHUB_MODELS_TOKEN`, or write
-`GITHUB_TOKEN=...` into your `.env` file to opt in.
+GitHub Models [retired on July 30, 2026](https://github.blog/changelog/2026-07-30-github-models-is-now-retired/). Its former tokens are ignored and a configuration warning is shown. Ambient GitHub tokens are never used for inference. Cerebras defaults to `gpt-oss-120b` from its [current catalog](https://inference-docs.cerebras.ai/models/overview); OpenRouter uses its [free router](https://openrouter.ai/openrouter/free) rather than a hard-coded list of aging free model IDs.
 
 ## Choose models
 
@@ -51,7 +49,6 @@ GROQ_MODELS=llama-3.3-70b-versatile
 OPENROUTER_MODELS=meta-llama/llama-3.3-70b-instruct:free
 GEMINI_MODELS=gemini-2.5-flash
 ANTHROPIC_MODELS=claude-sonnet-4-6
-GITHUB_MODELS=gpt-4o-mini
 ```
 
 ## Custom and local endpoints
@@ -92,3 +89,48 @@ than used as a finished rewrite. Set `ANTHROPIC_MODELS` to a model available to
 your account if the default is unavailable. Sampling parameters are omitted for
 compatibility with newer Claude models, which do not support them; see the
 [Messages API guide](https://platform.claude.com/docs/en/build-with-claude/working-with-messages).
+
+## OmniRoute and FreeLLMAPI gateways
+
+[OmniRoute](https://github.com/ourines/omniroute) and
+[FreeLLMAPI](https://github.com/tashfeenahmed/freellmapi) expose OpenAI-compatible
+endpoints and manage their own upstream credentials and routing. Humanizer can
+rotate across both gateways, their configured models, and direct providers.
+Configured gateways are preferred before direct providers; Ollama is last.
+
+```dotenv
+OMNIROUTE_BASE_URL=http://127.0.0.1:20128/v1
+OMNIROUTE_API_KEY=your-gateway-key
+OMNIROUTE_MODELS=your-exact-model-or-combo-id,another-configured-id
+
+FREELLMAPI_BASE_URL=http://127.0.0.1:3001/v1
+FREELLMAPI_API_KEY=your-unified-key
+FREELLMAPI_MODELS=auto:reliable
+```
+
+Use the exact OmniRoute model/combo IDs from its dashboard, not a guessed model
+name. FreeLLMAPI documents `auto` and `auto:reliable` routing aliases. Its gateway
+key does not create quota: upstream provider accounts must be configured there.
+`localhost` refers to the machine running Humanizer. If the gateway runs on a
+different machine or container, use its reachable URL instead.
+
+Open the provider panel and click **Test connections** to send a tiny test prompt
+to each endpoint. Successful checks show **connection tested**; a failed or
+rate-limited endpoint shows its cooldown and reason. No document is used for a
+connection test. Keys remain on the server.
+
+## Free option without an API key
+
+OVHcloud documents an [anonymous AI Endpoints tier](https://docs.ovhcloud.com/en/guides/public-cloud/ai-machine-learning/ai-endpoints-capabilities)
+limited to two requests/minute per model. Enable it explicitly:
+
+```dotenv
+HUMANIZER_ENABLE_OVH_ANONYMOUS=1
+OVH_MODELS=Meta-Llama-3_3-70B-Instruct,Mistral-Small-3.2-24B-Instruct-2506
+```
+
+This sends rewrite text to OVHcloud. Requests are paced separately per model,
+without an authorization header; failures join the normal failover/cooldown
+mechanism. Both models answered live requests during implementation. Free access
+and model availability can change, and the anonymous limits make long documents
+slower than a configured gateway or account-backed API.

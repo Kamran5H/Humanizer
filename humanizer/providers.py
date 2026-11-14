@@ -3,7 +3,7 @@ Multi-provider LLM pool with automatic failover.
 
 * Discovers every OpenAI-compatible provider whose key is present in the
   environment, ``.env`` or ``.keys.env`` (Gemini, Groq, Cerebras, SambaNova,
-  OpenRouter, GitHub Models, Together, Mistral, DeepInfra, plus any custom
+  OpenRouter, Together, Mistral, DeepInfra, Anthropic, plus any custom
   ``STEALTH_API_BASE`` and a local Ollama fallback).
 * Rotates across ready endpoints, respects per-host pacing without blocking
   other hosts, and puts failing endpoints on a cooldown that survives restarts.
@@ -38,6 +38,7 @@ _STATE_LOCK = threading.RLock()
 _NEXT_SLOT_BY_HOST: dict[str, float] = {}
 _COOLDOWNS: dict[str, float] = {}
 _LAST_ERROR: dict[str, str] = {}
+_LAST_SUCCESS: dict[str, float] = {}
 _KEYS_LOADED = False
 _CALL_COUNTER = 0
 _FILE_KEYS: set[str] = set()  # names defined explicitly in a .env / .keys.env file
@@ -49,10 +50,9 @@ _OAI_COOLDOWNS = _COOLDOWNS
 _FREE_PROVIDER_REGISTRY: list[tuple[str, str, str, str]] = [
     ("GEMINI_API_KEY", "https://generativelanguage.googleapis.com/v1beta/openai", "gemini-2.5-flash,gemini-2.5-flash-lite", "Gemini"),
     ("GROQ_API_KEY", "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile,llama-3.1-8b-instant", "Groq"),
-    ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1", "llama-3.3-70b", "Cerebras"),
+    ("CEREBRAS_API_KEY", "https://api.cerebras.ai/v1", "gpt-oss-120b", "Cerebras"),
     ("SAMBANOVA_API_KEY", "https://api.sambanova.ai/v1", "Meta-Llama-3.3-70B-Instruct", "SambaNova"),
-    ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "meta-llama/llama-3.3-70b-instruct:free,deepseek/deepseek-chat-v3-0324:free,mistralai/mistral-small-3.2-24b-instruct:free", "OpenRouter"),
-    ("GITHUB_MODELS_TOKEN", "https://models.inference.ai.azure.com", "gpt-4o-mini,Meta-Llama-3.3-70B-Instruct", "GitHub Models"),
+    ("OPENROUTER_API_KEY", "https://openrouter.ai/api/v1", "openrouter/free", "OpenRouter"),
     ("TOGETHER_API_KEY", "https://api.together.xyz/v1", "meta-llama/Llama-3.3-70B-Instruct-Turbo", "Together"),
     ("MISTRAL_API_KEY", "https://api.mistral.ai/v1", "mistral-small-latest", "Mistral"),
     ("DEEPINFRA_API_KEY", "https://api.deepinfra.com/v1/openai", "meta-llama/Llama-3.3-70B-Instruct", "DeepInfra"),
@@ -190,12 +190,27 @@ def _build_pool(primary_base: Optional[str] = None) -> list[dict]:
         for m in [x.strip() for x in models_raw.split(",") if x.strip()]:
             add("Custom", base, m, key)
 
+    # Gateways already manage upstream credentials/rotation. Keep their keys on
+    # the server and use the model or combo IDs from the user's gateway catalog.
+    for prefix, name, default_base, default_model in (
+        ("OMNIROUTE", "OmniRoute", "http://127.0.0.1:20128/v1", ""),
+        ("FREELLMAPI", "FreeLLMAPI", "http://127.0.0.1:3001/v1", "auto"),
+    ):
+        gateway_key = os.environ.get(f"{prefix}_API_KEY", "").strip()
+        gateway_base = os.environ.get(f"{prefix}_BASE_URL", default_base).strip()
+        gateway_models = os.environ.get(f"{prefix}_MODELS", default_model).strip()
+        if gateway_key:
+            for model in gateway_models.split(","):
+                add(name, gateway_base, model.strip(), gateway_key)
+
+    # Documented anonymous tier; opt in explicitly rather than sending a user's
+    # files to a new public provider merely because no other key was found.
+    if os.environ.get("HUMANIZER_ENABLE_OVH_ANONYMOUS", "").lower() in ("1", "true", "yes"):
+        for model in os.environ.get("OVH_MODELS", "Meta-Llama-3_3-70B-Instruct,Mistral-Small-3.2-24B-Instruct-2506").split(","):
+            add("OVHcloud (anonymous)", "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1", model.strip(), "anonymous")
+
     for env_k, base_url, models_csv, display in _FREE_PROVIDER_REGISTRY:
         key = os.environ.get(env_k, "").strip()
-        if not key and env_k == "GITHUB_MODELS_TOKEN" and "GITHUB_TOKEN" in _FILE_KEYS:
-            # A generic GITHUB_TOKEN from the shell/CI is NOT used implicitly (privacy);
-            # only one the user placed in a key file on purpose.
-            key = os.environ.get("GITHUB_TOKEN", "").strip()
         if not key:
             continue
         override_var = env_k.rsplit("_", 2)[0] + "_MODELS" if env_k.endswith("_API_KEY") else env_k.split("_")[0] + "_MODELS"
@@ -216,6 +231,16 @@ def has_providers() -> bool:
     return bool(_build_pool())
 
 
+def configuration_warnings() -> list[str]:
+    load_keys_if_needed()
+    warnings = []
+    if os.environ.get("OMNIROUTE_API_KEY", "").strip() and not os.environ.get("OMNIROUTE_MODELS", "").strip():
+        warnings.append("OMNIROUTE_API_KEY is set, but OMNIROUTE_MODELS is missing. Copy a model or combo ID from the gateway dashboard.")
+    if os.environ.get("GITHUB_MODELS_TOKEN") or ("GITHUB_TOKEN" in _FILE_KEYS and os.environ.get("GITHUB_TOKEN")):
+        warnings.append("GitHub Models retired on July 30, 2026. Its token is ignored; configure a supported provider or gateway.")
+    return warnings
+
+
 def available_count() -> int:
     now = time.time()
     with _STATE_LOCK:
@@ -225,19 +250,47 @@ def available_count() -> int:
 # ---------------------------------------------------------------------------
 # HTTP
 # ---------------------------------------------------------------------------
-def _reserve_slot(base_url: str) -> float:
-    """Reserve the next call slot for a host and return how long to wait (lock is not held while sleeping)."""
+def _pacing_key(base_url: str, model: Optional[str] = None) -> str:
     host = _host_key(base_url)
+    return f"{host}/{model}" if "endpoints.kepler.ai.cloud.ovh.net" in host else host
+
+
+def _reserve_slot(base_url: str, model: Optional[str] = None) -> float:
+    """Reserve the next call slot for a host and return how long to wait (lock is not held while sleeping)."""
+    host = _pacing_key(base_url, model)
+    interval = max(_MIN_INTERVAL, 30.1) if "endpoints.kepler.ai.cloud.ovh.net" in host else _MIN_INTERVAL
     with _STATE_LOCK:
         now = time.time()
         slot = max(now, _NEXT_SLOT_BY_HOST.get(host, 0.0))
-        _NEXT_SLOT_BY_HOST[host] = slot + _MIN_INTERVAL
+        _NEXT_SLOT_BY_HOST[host] = slot + interval
         return slot - now
 
 
-def _provider_wait(base_url: str) -> float:
+def _provider_wait(base_url: str, model: Optional[str] = None) -> float:
     with _STATE_LOCK:
-        return max(0.0, _NEXT_SLOT_BY_HOST.get(_host_key(base_url), 0.0) - time.time())
+        return max(0.0, _NEXT_SLOT_BY_HOST.get(_pacing_key(base_url, model), 0.0) - time.time())
+
+
+def _wait_for_slot(base_url: str, model: str, cfg: Optional[HumanizerConfig] = None) -> None:
+    """Reserve only when ready, so cancelled workers leave no future reservations."""
+    announced = False
+    while True:
+        if cfg is not None and cfg.cancelled:
+            raise RuntimeError("Cancelled")
+        with _STATE_LOCK:
+            delay = _provider_wait(base_url, model)
+            if delay <= 0:
+                _reserve_slot(base_url, model)
+                return
+        if cfg is not None and not announced:
+            cfg.status(f"Waiting {delay:.0f}s for {model} rate pacing…")
+            announced = True
+        wait = min(delay, 30.0)
+        if cfg is not None and cfg.cancel_event is not None:
+            if cfg.cancel_event.wait(wait):
+                raise RuntimeError("Cancelled")
+        else:
+            time.sleep(wait)
 
 
 def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, api_key: str,
@@ -264,12 +317,13 @@ def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, a
         method="POST",
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {api_key}",
             "User-Agent": "HumanizerPro/6.0",
             "HTTP-Referer": "https://github.com/Kamran5H/Humanizer",
             "X-Title": "Humanizer Pro",
         },
     )
+    if api_key != "anonymous":
+        req.add_header("Authorization", f"Bearer {api_key}")
     with urllib.request.urlopen(req, timeout=timeout) as r:
         d = json.loads(r.read().decode("utf-8"))
 
@@ -326,6 +380,8 @@ def _cool_endpoint(base_url: str, model: str, seconds: float, reason: str = "") 
 
 
 def _handle_error(e: BaseException, base_url: str, model: str, provider: str) -> None:
+    with _STATE_LOCK:
+        _LAST_SUCCESS.pop(_ep_key(base_url, model), None)
     if isinstance(e, urllib.error.HTTPError):
         code = e.code
         body = ""
@@ -374,7 +430,7 @@ def get_provider_status() -> list[dict]:
         for ep in pool:
             key = _ep_key(ep["base_url"], ep["model"])
             cd = _COOLDOWNS.get(key, 0.0)
-            wait = max(0.0, _NEXT_SLOT_BY_HOST.get(_host_key(ep["base_url"]), 0.0) - now)
+            wait = max(0.0, _NEXT_SLOT_BY_HOST.get(_pacing_key(ep["base_url"], ep["model"]), 0.0) - now)
             out.append({
                 "name": ep["name"],
                 "model": ep["model"],
@@ -384,8 +440,31 @@ def get_provider_status() -> list[dict]:
                 "cooldown_remaining_sec": round(max(0.0, cd - now), 1),
                 "throttle_wait_sec": round(wait, 1),
                 "last_error": _LAST_ERROR.get(key, "") if cd > now else "",
+                "last_success_at": _LAST_SUCCESS.get(key),
             })
     return out
+
+
+def check_connections() -> list[dict]:
+    """Probe configured endpoints using a tiny prompt, never a user's document."""
+    from concurrent.futures import ThreadPoolExecutor
+
+    def probe(endpoint: dict) -> None:
+        base, model = endpoint["base_url"], endpoint["model"]
+        try:
+            _wait_for_slot(base, model)
+            _call_endpoint("Reply with exactly OK.", 0.0, base, model, endpoint["api_key"], timeout=20.0, max_tokens=128)
+            with _STATE_LOCK:
+                _LAST_SUCCESS[_ep_key(base, model)] = time.time()
+                _COOLDOWNS.pop(_ep_key(base, model), None)
+                _LAST_ERROR.pop(_ep_key(base, model), None)
+        except Exception as exc:
+            _handle_error(exc, base, model, endpoint["name"])
+
+    with ThreadPoolExecutor(max_workers=4) as executor:
+        list(executor.map(probe, _build_pool()))
+    _save_persistent_cooldowns()
+    return get_provider_status()
 
 
 def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperature: float = 0.9) -> str:
@@ -409,10 +488,11 @@ def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperatur
         time.sleep(max(0.0, wait))
         ready = [soonest]
 
-    # Prefer cloud endpoints with no pending wait, rotate between equals, local last.
+    # Prefer explicit gateways, then direct endpoints; local Ollama is last.
     def _rank(item: tuple[int, dict]) -> tuple:
         i, ep = item
-        return (_is_local(ep["base_url"]), round(_provider_wait(ep["base_url"]), 1), (i + rr) % len(ready))
+        priority = 0 if ep["name"] in ("Custom", "OmniRoute", "FreeLLMAPI") else (2 if _is_local(ep["base_url"]) else 1)
+        return (priority, round(_provider_wait(ep["base_url"], ep["model"]), 1), (i + rr) % len(ready))
 
     ordered = [ep for _, ep in sorted(enumerate(ready), key=_rank)]
     last_err: Optional[BaseException] = None
@@ -422,13 +502,16 @@ def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperatur
         name, base, model, key = ep["name"], ep["base_url"], ep["model"], ep["api_key"]
         try:
             if not _is_local(base):
-                delay = _reserve_slot(base)
-                if delay > 0:
-                    time.sleep(delay)
+                _wait_for_slot(base, model, cfg)
             if cfg is not None:
                 cfg.status(f"Calling {name} ({model})…")
-            return _call_endpoint(prompt, temperature, base, model, key, timeout=120.0 if _is_local(base) else 75.0)
+            result = _call_endpoint(prompt, temperature, base, model, key, timeout=120.0 if _is_local(base) else 75.0)
+            with _STATE_LOCK:
+                _LAST_SUCCESS[_ep_key(base, model)] = time.time()
+            return result
         except Exception as e:
+            if cfg is not None and cfg.cancelled:
+                raise RuntimeError("Cancelled") from e
             last_err = e
             logger.info("%s/%s failed: %s", name, model, e)
             _handle_error(e, base, model, name)

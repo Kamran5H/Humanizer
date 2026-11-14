@@ -42,9 +42,9 @@ from humanizer.document import (  # noqa: F401  (re-exported for backwards compa
 )
 from humanizer.nlp import fix_encoding as _fix_encoding
 from humanizer.nlp import is_faithful as _is_faithful
-from humanizer.patterns import BANNED_FOR_PROMPT, BANNED_PHRASES_FOR_PROMPT
+from humanizer.patterns import BANNED_FOR_PROMPT
 from humanizer.providers import call_llm_pool, has_providers
-from humanizer.rules import polish, rewrite
+from humanizer.rules import rewrite
 from humanizer.text import ing_to_3sg, split_sentences
 
 logger = logging.getLogger(__name__)
@@ -68,7 +68,6 @@ _SCI_PERSONAS = [
 ]
 
 _BANNED_WORDS = ", ".join(BANNED_FOR_PROMPT)
-_BANNED_PHRASES = "; ".join(f'"{p}"' for p in BANNED_PHRASES_FOR_PROMPT)
 
 # ---------------------------------------------------------------------------
 # Output cleaning
@@ -168,7 +167,9 @@ def _clean_rewrite(src: str, out: str, cfg: Optional[HumanizerConfig] = None) ->
         return ""
     out = _fix_encoding(out)
     out = _guard_fidelity(src, out)
-    return polish(out, cfg) if out else ""
+    # Do not run the offline substitution/sentence-splitting pipeline on a model
+    # rewrite: it can damage carefully chosen wording and change its meaning.
+    return out
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +179,8 @@ _NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)*(?![\w])")
 _PLACEHOLDER = re.compile(r"__(?:RUN_LOCKED|RUN_PLACEHOLDER|LOCK_[A-Z_]+)_\d+__")
 _TAG_OPEN = re.compile(r"<(bi|b|i|u)\s+id=['\"](\d+)['\"]>", re.IGNORECASE)
 _CITE = re.compile(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]|\([A-Z][A-Za-z'’\-]+(?: et al\.?)?,? (?:19|20)\d{2}[a-z]?\)")
-_NEGATION = re.compile(r"\b(?:not|no|never|neither|nor|without)\b|n['’]t\b", re.IGNORECASE)
+_NEGATION = re.compile(r"\b(?:no|never|neither|nor|without)\b|\bnot\b(?!\s+only\b)|n['’]t\b", re.IGNORECASE)
+_UNCERTAINTY = re.compile(r"\b(?:may|might|could|potential(?:ly)?|possibly|likely|unlikely|suggest(?:s|ed)?|appears?)\b", re.IGNORECASE)
 
 
 def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *, short: bool = False) -> tuple[bool, str]:
@@ -191,6 +193,8 @@ def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *
     # alone treats 'did reduce' and 'did not reduce' as virtually identical.
     if len(_NEGATION.findall(src)) != len(_NEGATION.findall(cand)):
         return False, "negation changed"
+    if len(_UNCERTAINTY.findall(src)) != len(_UNCERTAINTY.findall(cand)):
+        return False, "uncertainty changed"
     if _PLACEHOLDER.findall(src) != _PLACEHOLDER.findall(cand):
         return False, "placeholder changed or reordered"
     source_tags = [m.groups() for m in _TAG_OPEN.finditer(src)]
@@ -231,12 +235,17 @@ def _avoid_block(avoid_smooth: Optional[list[str]]) -> str:
 
 def build_stealth_prompt(text: str, persona: str, is_short: bool, avoid_smooth: Optional[list[str]] = None,
                          scientific: bool = False) -> str:
-    keep = ("Keep exactly: every fact, claim, number, unit, name, date, quotation, technical term, citation "
-            "such as [3] or (Smith, 2020), URL, and every placeholder such as __RUN_LOCKED_0__ or __LOCK_QTY_1__. "
-            "Keep tags like <b id='2'>…</b> around the same words. Add no new facts, examples, sources or URLs, and remove no information.")
+    keep = ("Preserve every fact, claim, number, unit, name, date, quotation, technical term, citation and URL "
+            "that actually appears in the source. Preserve negation, qualifications, uncertainty and causal relationships. "
+            "If formatting tags or locked tokens appear in the source, retain each exactly once, in order, with paired tags intact. "
+            "Do not introduce tags or tokens that are absent from the source. "
+            "Add no facts, examples, sources, references or URLs, and remove no information.")
+    qualifiers = _NEGATION.findall(text) + _UNCERTAINTY.findall(text)
+    if qualifiers:
+        keep += " Retain these source qualifiers verbatim, with their original scope: " + ", ".join(qualifiers) + "."
     if is_short:
         return (f"Rewrite this short line as {persona} would, plainly and without hype. {keep} "
-                f"Keep it about the same length. Avoid: {_BANNED_WORDS}.\n"
+                "Keep it about the same length. Prefer direct, natural wording; preserve technical terminology.\n"
                 "Return only the rewritten line.\n\nLINE:\n" + text)
     register = ("Formal academic register: no contractions, no slang, no rhetorical questions. Prefer active verbs "
                 "('we measured', 'the catalyst lowers') over heavy nominalisations. Keep domain terminology exactly."
@@ -247,14 +256,13 @@ def build_stealth_prompt(text: str, persona: str, is_short: bool, avoid_smooth: 
 {keep}
 
 Style rules:
-- Vary sentence length a lot: mix short sentences (4-9 words) with longer ones (20-32 words). Never write three sentences of similar length in a row.
-- Vary how sentences begin. Do not open sentences with Furthermore, Moreover, Additionally, Notably, Ultimately or In conclusion.
-- Use plain, specific words. Say "is", "are" or "has" instead of "serves as", "stands as" or "boasts".
-- No em dashes. No "not only ... but also". No ", highlighting/underscoring/fostering ..." tails. Do not add lists of three.
-- Never use these words: {_BANNED_WORDS}.
-- Never use these phrases: {_BANNED_PHRASES}.
+- Vary sentence openings and rhythm where it improves readability without changing the claims.
+- Replace repetitive boilerplate with direct equivalents. Use precise, natural language.
+- Keep technical terms, meaningful enumerations, and the author's degree of certainty.
+- Do not strengthen a possibility into an established result or invent a causal explanation.
 - {register}
-- Keep roughly the same length (within 15%) and the same line breaks.{_avoid_block(avoid_smooth)}
+- Rewrite the prose without summarizing it. Retain each sentence's information and the same line breaks.
+- The source contains {len(text.split())} words. Return about {len(text.split())} words, between {round(len(text.split()) * 0.85)} and {round(len(text.split()) * 1.15)} words.{_avoid_block(avoid_smooth)}
 
 Return only the rewritten text: no preamble, notes, quotes or markdown fences.
 
@@ -342,6 +350,7 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
 
     best_text: Optional[str] = None
     best_score = 101.0
+    last_failure = "No candidate received."
     hints: list[str] = []
     for attempt in range(budget):
         if cfg.cancelled:
@@ -352,6 +361,7 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
         try:
             raw = call_llm_pool(prompt, cfg, temp)
         except Exception as e:
+            last_failure = f"Provider request failed ({type(e).__name__}); check provider status."
             logger.warning("LLM rewrite failed: %s", e)
             if "No LLM providers" in str(e) or "cooling down" in str(e) or "All LLM providers failed" in str(e):
                 break
@@ -359,6 +369,8 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
         cand = _clean_rewrite(text, raw, cfg)
         ok, reason = check_fidelity(text, cand, cfg, short=is_short)
         if not ok:
+            last_failure = f"Candidate rejected: {reason}."
+            cfg.status(last_failure)
             logger.debug("Candidate rejected: %s", reason)
             continue
         if budget == 1:
@@ -373,7 +385,7 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
 
     if best_text is None:
         if not cfg.allow_offline_fallback and not cfg.cancelled:
-            raise ValueError("No safe AI rewrite was produced. Check provider status and retry. "
+            raise ValueError(f"No safe AI rewrite was produced. {last_failure} Check provider status and retry. "
                              "The request failed or candidates did not preserve the source; no offline substitution was made.")
         cfg.status("LLM unavailable for this paragraph — using offline rules.")
         return humanize_paragraph_rules(text, cfg)
