@@ -84,7 +84,7 @@ def is_faithful(src: str, out: str, min_cosine: float = 0.25, min_len_ratio: flo
     if sw >= 25 and ow < sw * min_len_ratio:
         return False
     sim = meaning_similarity(src, out)
-    if sim is not None and sw >= 12 and sim < min_cosine:
+    if sim is not None and sw >= 4 and sim < min_cosine:
         return False
     return True
 

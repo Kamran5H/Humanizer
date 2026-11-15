@@ -116,6 +116,10 @@ def detect(text: str) -> dict:
         raise ValueError("Use at least 40 words for the trained detector; short excerpts are unreliable.")
     if len(text) > 100_000:
         raise ValueError("The trained detector accepts at most 100,000 characters per request. Split this document into sections.")
+    from humanizer.detector import supported_script
+
+    if not supported_script(text):
+        raise ValueError("The trained detector supports English prose; this writing system is unsupported.")
     # One CPU/GPU inference at a time avoids concurrent model loads and memory spikes.
     with _LOCK:
         torch, model, tokenizer, device = _load_bundle()

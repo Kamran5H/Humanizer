@@ -150,7 +150,7 @@ def _source_document(sid: Optional[str]) -> Optional[Path]:
 
 
 def _summary(a: dict) -> dict:
-    return {k: a.get(k) for k in ("ai_score", "verdict", "confidence", "burstiness", "ai_tells", "sentences", "words", "signals")}
+    return {k: a.get(k) for k in ("score_available", "minimum_words", "ai_score", "verdict", "confidence", "burstiness", "ai_tells", "sentences", "words", "signals")}
 
 
 def _run_humanize(req: HumanizeRequest, cancel: Optional[threading.Event] = None, progress=None, status=None) -> dict:

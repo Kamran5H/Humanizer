@@ -50,7 +50,8 @@ def print_cli_report(
     delta = initial_score - final_score
     rows = [
         ("Verdict", metrics.get("verdict") or "Humanized"),
-        ("Pattern index", f"{initial_score:.1f}/100 -> {final_score:.1f}/100" + (f"  (-{delta:.1f} pts)" if delta > 0 else "")),
+        ("Pattern index", (f"{initial_score:.1f}/100 -> {final_score:.1f}/100" + (f"  (-{delta:.1f} pts)" if delta > 0 else ""))
+         if metrics.get("score_available", True) else "Unavailable: insufficient English prose"),
         ("Paragraphs", str(paras)),
         ("Words", f"{words:,}"),
         ("Length variation", f"{metrics.get('burstiness') or 0.0:.1f}%"),
@@ -110,9 +111,14 @@ def _print_analysis(text: str, as_json: bool) -> int:
     if as_json:
         print(json.dumps({k: v for k, v in a.items() if k != "sentence_scores"}, indent=2))
         return 0
+    if not a["score_available"]:
+        print(a["note"])
+        return 0
     print(f"Writing-pattern index: {a['ai_score']:.1f}/100  ({a['verdict']})")
     print(a["score_explanation"])
     for s in a["signals"]:
+        if not s.get("available", True):
+            continue
         print(f"  {s['label']:<20} {s['ai']:>3}%  {s['hint']}")
     if a["tells"]:
         print(f"\n{len(a['tells'])} AI pattern(s):")

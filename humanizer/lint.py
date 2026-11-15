@@ -45,7 +45,7 @@ def lint_text(text: str, src: Optional[str] = None) -> list[tuple[str, str]]:
     """Return [(severity, message)]. If `src` is given, also check fidelity against it."""
     issues: list[tuple[str, str]] = []
     if not text:
-        return issues
+        return [("error", "all source text was dropped")] if src and src.strip() else issues
 
     if _FFFD in text:
         issues.append(("error", f"contains U+FFFD replacement char x{text.count(_FFFD)}"))
@@ -79,6 +79,11 @@ def lint_text(text: str, src: Optional[str] = None) -> list[tuple[str, str]]:
         issues.append(("warn", f"AI-tell words survive: {vocab[:12]}"))
 
     if src is not None:
+        from humanizer.engine import check_fidelity
+
+        ok, reason = check_fidelity(src, text, short=True)
+        if not ok:
+            issues.append(("error", f"Source fidelity check failed: {reason}"))
         fab_urls = set(_URL.findall(text)) - set(_URL.findall(src))
         if fab_urls:
             issues.append(("error", f"fabricated URL(s): {sorted(fab_urls)}"))

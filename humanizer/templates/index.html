@@ -452,7 +452,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
       const text = txtIn.value; const seq = ++analyzeSeq;
       if (!text.trim()) { state.inputAnalysis = null; renderAnalysis(null); setChip($('chipIn'), null); return; }
       try { const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text})}); if (seq !== analyzeSeq) return;
-        state.inputAnalysis = a; setChip($('chipIn'), a.words >= 8 ? a.ai_score : null);
+        state.inputAnalysis = a; setChip($('chipIn'), a.score_available ? a.ai_score : null);
         if (!state.lastResult) renderAnalysis(a, null); renderTells(a); if ($('tabMarks').getAttribute('aria-selected') === 'true') renderMarks();
       } catch (e) { /* ignore transient errors while typing */ }
     }, 450);
@@ -488,9 +488,9 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
 
   function renderAnalysis(a, before) {
     const ring = $('ringVal'), C = 295.3;
-    if (!a || a.words < 8) {
+    if (!a || !a.score_available) {
       ring.style.strokeDashoffset = C; ring.setAttribute('stroke', 'var(--text-3)'); $('ringNum').textContent = '—';
-      $('verdict').textContent = a ? 'Too short to judge' : 'Paste text to analyze'; $('verdictSub').textContent = 'Analysis runs on this server. AI rewriting uses configured providers.';
+      $('verdict').textContent = a ? a.verdict : 'Paste text to analyze'; $('verdictSub').textContent = a ? a.note || 'Use at least 40 words of English prose.' : 'Analysis runs on this server. AI rewriting uses configured providers.';
       $('signals').innerHTML = ''; $('confTag').textContent = ''; $('compare').hidden = true; setRead(null); return;
     }
     ring.style.strokeDashoffset = C * (1 - a.ai_score / 100); ring.setAttribute('stroke', colorFor(a.ai_score));
@@ -499,7 +499,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     $('confTag').textContent = a.confidence ? a.confidence + ' signal coverage' : '';
     if (before != null) { $('compare').hidden = false; $('cmpBefore').textContent = Math.round(before) + '/100'; $('cmpAfter').textContent = Math.round(a.ai_score) + '/100';
       const d = before - a.ai_score; $('cmpDelta').textContent = d > 0 ? `↓ ${Math.round(d)} pts` : ''; } else $('compare').hidden = true;
-    $('signals').innerHTML = (a.signals || []).map((s) => `<div class="sig-row" title="${esc(s.hint)}"><span class="lbl">${esc(s.label)}</span><span class="pct">${s.ai}%</span>
+    $('signals').innerHTML = (a.signals || []).filter((s) => s.available !== false).map((s) => `<div class="sig-row" title="${esc(s.hint)}"><span class="lbl">${esc(s.label)}</span><span class="pct">${s.ai}%</span>
       <div class="bar"><i style="width:${s.ai}%;background:${colorFor(s.ai)}"></i></div><span class="hint">${esc(s.hint)}</span></div>`).join('');
     setRead(a);
   }
@@ -609,7 +609,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     ['btnCopy', 'btnExport', 'btnReuse'].forEach((id) => $(id).disabled = false);
     $('statsOut').textContent = `${wc(r.output).toLocaleString()} words`;
     $('metaOut').textContent = `${({llm: 'AI rewrite', mixed: 'AI rewrite + offline fallback', rules: 'Offline rules'})[r.engine] || r.engine} · ${r.duration}s`;
-    setChip($('chipOut'), r.final_score);
+    setChip($('chipOut'), r.after && r.after.score_available ? r.final_score : null);
     try { const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text: r.output})});
       if (state.lastResult !== displayedResult || txtOut.value !== r.output) return;
       renderAnalysis(a, r.initial_score); renderTells(a); }
@@ -635,7 +635,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
       try {
         const a = await api('/api/analyze', {method: 'POST', body: JSON.stringify({text})});
         if (seq !== outputSeq || text !== txtOut.value) return;
-        setChip($('chipOut'), a.words >= 8 ? a.ai_score : null);
+        setChip($('chipOut'), a.score_available ? a.ai_score : null);
         renderAnalysis(a, state.lastResult && state.lastResult.initial_score);
       } catch { $('verdict').textContent = 'Edited result — analysis unavailable'; }
     }, 450);

@@ -243,3 +243,13 @@ Optional extras: `pip install pypdf` (PDF import, included in `requirements.txt`
 [![Contact Email](https://img.shields.io/badge/Email-chkamran32b%40gmail.com-EA4335?style=flat-square&logo=gmail&logoColor=white)](mailto:chkamran32b@gmail.com)
 
 </div>
+
+## Accuracy safeguards and limits
+
+Rewrites are checked before use, including the final sentence-refinement pass and resumed paragraphs. Changed units (5 mg → 5 kg), signs, scientific notation, statistical comparisons, URLs, citations, equations, direct quotations, common increase/decrease reversals, and removed uncertainty are rejected. The offline editor keeps direct quotations and avoids global substitutions such as “testament → proof” and “realm → field.” It keeps participial clauses rather than guessing their subject or changing their tense.
+
+These checks are conservative: a valid paraphrase may be rejected. They cannot establish semantic equivalence, verify the source's claims, or catch every change in the scope of a negation or a quantity. Review output against the source, especially medical, scientific, and legal text. A lower writing-pattern index does not establish a better or more faithful rewrite.
+
+Pattern analysis requires at least 40 words. API clients must check `score_available` before using the legacy numeric `ai_score` field; an unavailable score is not evidence of human authorship. Rhythm and uniformity are excluded when fewer than three sentences are available. The studio and CLI show unavailable scores explicitly. Text primarily in a non-Latin script is rejected by the English-only analyzers; this script check is not full language identification.
+
+`tests/test_accuracy.py` exercises adversarial factual edits and valid controls. These regression tests are not a benchmark of real-world AI-authorship detection. Neither the local pattern index nor the optional trained classifier is calibrated to Turnitin or a user's writing population.
