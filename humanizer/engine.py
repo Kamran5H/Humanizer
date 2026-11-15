@@ -44,7 +44,7 @@ from humanizer.nlp import fix_encoding as _fix_encoding
 from humanizer.nlp import is_faithful as _is_faithful
 from humanizer.patterns import BANNED_FOR_PROMPT
 from humanizer.providers import call_llm_pool, has_providers
-from humanizer.rules import rewrite
+from humanizer.rules import lock_elements, rewrite
 from humanizer.text import ing_to_3sg, split_sentences
 
 logger = logging.getLogger(__name__)
@@ -124,24 +124,7 @@ def _strip_wrappers(text: str) -> str:
 
 
 def _guard_fidelity(src: str, out: str) -> str:
-    """Remove invented citation placeholders/URLs and immediate duplicate sentences (line structure kept)."""
-    out = re.sub(r"\s*\[(?:citation(?: needed)?|ref|reference|source|cite|insert\s+citation)\]", "", out, flags=re.IGNORECASE)
-    src_cites = set(re.findall(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]", src))
-    for c in set(re.findall(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]", out)):
-        if c not in src_cites:
-            out = out.replace(c, "")
-    if not re.search(r"https?://|www\.", src):
-        out = re.sub(r"\(?\b(?:https?://|www\.)[^\s()]+\)?", "", out)
-    fixed_lines = []
-    for line in out.split("\n"):
-        sents = split_sentences(line)
-        dedup: list[str] = []
-        for s in sents:
-            if not dedup or s.lower() != dedup[-1].lower():
-                dedup.append(s)
-        fixed_lines.append(" ".join(dedup) if sents else line)
-    out = "\n".join(fixed_lines)
-    out = re.sub(r"[ \t]+([,.;:])", r"\1", out)
+    """Normalize whitespace only; invented facts must be rejected, not hidden."""
     return re.sub(r"[ \t]{2,}", " ", out).strip()
 
 
@@ -162,6 +145,8 @@ def _inflect_ing_to_3sg(verb_ing: str) -> str:  # backwards compatibility
 
 
 def _clean_rewrite(src: str, out: str, cfg: Optional[HumanizerConfig] = None) -> str:
+    if out.strip() == src.strip():
+        return src
     out = _strip_wrappers(out)
     if not out:
         return ""
@@ -175,12 +160,23 @@ def _clean_rewrite(src: str, out: str, cfg: Optional[HumanizerConfig] = None) ->
 # ---------------------------------------------------------------------------
 # Fidelity checks
 # ---------------------------------------------------------------------------
-_NUM = re.compile(r"(?<![\w.])\d+(?:[.,]\d+)*(?![\w])")
+_NUM = re.compile(r"(?<![\w.])[+−-]?\d+(?:[.,]\d+)*(?:[eE][+−-]?\d+)?(?![\w])")
 _PLACEHOLDER = re.compile(r"__(?:RUN_LOCKED|RUN_PLACEHOLDER|LOCK_[A-Z_]+)_\d+__")
 _TAG_OPEN = re.compile(r"<(bi|b|i|u)\s+id=['\"](\d+)['\"]>", re.IGNORECASE)
 _CITE = re.compile(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]|\([A-Z][A-Za-z'’\-]+(?: et al\.?)?,? (?:19|20)\d{2}[a-z]?\)")
 _NEGATION = re.compile(r"\b(?:no|never|neither|nor|without)\b|\bnot\b(?!\s+only\b)|n['’]t\b", re.IGNORECASE)
 _UNCERTAINTY = re.compile(r"\b(?:may|might|could|potential(?:ly)?|possibly|likely|unlikely|suggest(?:s|ed)?|appears?)\b", re.IGNORECASE)
+
+
+_DIRECTION = re.compile(
+    r"\b(?P<up>increas\w*|rais(?:e|es|ed|ing)|rose|ris(?:e|es|ing))\b|"
+    r"\b(?P<down>decreas\w*|reduc\w*|lower(?:s|ed|ing)?|fell|fall(?:s|ing)?)\b", re.IGNORECASE,
+)
+
+
+def _directions(text: str) -> Counter:
+    """Conservative check for common quantitative direction reversals."""
+    return Counter(m.lastgroup for m in _DIRECTION.finditer(text))
 
 
 def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *, short: bool = False) -> tuple[bool, str]:
@@ -193,7 +189,7 @@ def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *
     # alone treats 'did reduce' and 'did not reduce' as virtually identical.
     if len(_NEGATION.findall(src)) != len(_NEGATION.findall(cand)):
         return False, "negation changed"
-    if len(_UNCERTAINTY.findall(src)) != len(_UNCERTAINTY.findall(cand)):
+    if Counter(w.lower() for w in _UNCERTAINTY.findall(src)) != Counter(w.lower() for w in _UNCERTAINTY.findall(cand)):
         return False, "uncertainty changed"
     if _PLACEHOLDER.findall(src) != _PLACEHOLDER.findall(cand):
         return False, "placeholder changed or reordered"
@@ -204,20 +200,31 @@ def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *
     if (source_tags != candidate_tags or candidate_tags != complete_tags
             or Counter(t[0] for t in candidate_tags) != Counter(closing_tags)):
         return False, "formatting tags changed or malformed"
-    if set(_CITE.findall(src)) - set(_CITE.findall(cand)):
-        return False, "citation dropped"
+    if Counter(_CITE.findall(src)) != Counter(_CITE.findall(cand)):
+        return False, "citation dropped or introduced"
     src_nums = Counter(n.replace(",", "") for n in _NUM.findall(src))
     cand_nums = Counter(n.replace(",", "") for n in _NUM.findall(cand))
     if src_nums != cand_nums:
         return False, "number changed"
+    # Compare complete protected spans, not just digits: 5 mg and 5 kg,
+    # p < 0.05 and p > 0.05 carry different claims. Multiplicity matters.
+    def facts(value):
+        _, vault = lock_elements(value)
+        return Counter(span for token, span in vault.items()
+                       if not token.startswith(("__LOCK_TAG_", "__LOCK_PLACEHOLDER_")))
+
+    if facts(src) != facts(cand):
+        return False, "protected fact changed"
+    if _directions(src) != _directions(cand):
+        return False, "direction of claim changed"
+    if not _is_faithful(src, cand):
+        return False, "meaning drift"
     if not short:
         sw, cw = len(src.split()), len(cand.split())
         lo = cfg.min_length_ratio if cfg else 0.75
         hi = cfg.max_length_ratio if cfg else 1.45
         if cw < sw * lo or cw > max(sw * hi, sw + 12):
             return False, "length out of range"
-        if not _is_faithful(src, cand):
-            return False, "meaning drift"
     return True, ""
 
 
@@ -328,7 +335,7 @@ def _roughen_smooth_sentences(text: str, cfg: HumanizerConfig) -> str:
         cand_sents = split_sentences(cand)
         if not cand_sents:
             continue
-        cand = " ".join(cand_sents[:2])
+        cand = " ".join(cand_sents)
         ok, _ = check_fidelity(sent, cand, cfg, short=True)
         sw, cw = len(sent.split()), len(cand.split())
         if ok and cand != sent and max(3, sw * 0.5) <= cw <= max(35, sw * 1.8):
@@ -391,7 +398,12 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
         return humanize_paragraph_rules(text, cfg)
     cfg.count("llm")
     if not is_short and cfg.stealth_level >= 3 and not cfg.cancelled:
-        best_text = _roughen_smooth_sentences(best_text, cfg)
+        refined = _roughen_smooth_sentences(best_text, cfg)
+        ok, reason = check_fidelity(text, refined, cfg)
+        if ok:
+            best_text = refined
+        else:
+            cfg.status(f"Sentence refinement discarded: {reason}.")
     return best_text
 
 
@@ -479,7 +491,7 @@ def humanize_text(text: str, cfg: HumanizerConfig) -> str:
 
     def work(i: int) -> tuple[int, str]:
         cached = ckpt.get(i)
-        if cached is not None:
+        if cached is not None and check_fidelity(units[i][1], cached, cfg)[0]:
             return i, cached
         if cfg.cancelled:
             return i, units[i][1]
@@ -551,7 +563,7 @@ def humanize_docx(src: Path, cfg: HumanizerConfig, dst: Optional[Path] = None) -
 
     def work(i: int) -> tuple[int, str]:
         cached = ckpt.get(i)
-        if cached is not None:
+        if cached is not None and check_fidelity(tagged[i][0], cached, cfg)[0]:
             return i, cached
         t = tagged[i][0]
         if cfg.cancelled:

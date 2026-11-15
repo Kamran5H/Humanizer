@@ -40,6 +40,7 @@ GENERAL = "general"  # applied only when cfg.scientific is False
 # Locking of protected elements
 # ---------------------------------------------------------------------------
 _LOCK_RE: list[tuple[re.Pattern[str], str]] = [
+    (re.compile(r'"[^"\n]+"|“[^”\n]+”|‘[^’\n]+’'), "QUOTE"),
     (re.compile(r"__RUN_(?:LOCKED|PLACEHOLDER)_\d+__"), "PLACEHOLDER"),
     (re.compile(r"</?(?:bi|b|i|u)(?:\s+id=['\"]\d+['\"])?>", re.IGNORECASE), "TAG"),
     (re.compile(r"https?://[^\s<>\"]+[^\s<>\".,;:!?)\]]"), "URL"),
@@ -149,7 +150,7 @@ _VERBS: dict[str, tuple[str, str]] = {
 }
 _VERB_EXCLUDE_NEXT: dict[str, str] = {
     # Do not swap when the word is used as a noun/adjective in these contexts.
-    "leverage": r"(?!\s+(?:ratio|ratios|effect|point|buyout))",
+    "leverage": r"(?!\s+(?:ratio|ratios|effect|point|buyout|of|is|was))",
     "showcase": r"(?!\s+(?:of|for)\b)",
     "highlight": r"(?!\s+(?:of|reel)\b)",
     "purchase": r"(?!\s+(?:price|order|agreement|of)\b)",
@@ -164,23 +165,12 @@ _WORDS: dict[str, tuple[str, str]] = {
     "seamless": ("smooth", ALL),
     "seamlessly": ("smoothly", ALL),
     "multifaceted": ("complex", ALL),
-    "holistic": ("broad", ALL),
-    "holistically": ("as a whole", ALL),
     "meticulous": ("careful", ALL),
     "meticulously": ("carefully", ALL),
     "intricacies": ("details", ALL),
-    "tapestry": ("mix", ALL),
-    "testament": ("proof", ALL),
-    "realm": ("field", ALL),
-    "realms": ("fields", ALL),
     "interplay": ("interaction", ALL),
-    "synergy": ("cooperation", ALL),
-    "synergies": ("combined benefits", ALL),
     "plethora": ("abundance", ALL),
-    "cornerstone": ("foundation", ALL),
-    "bedrock": ("foundation", ALL),
     "linchpin": ("central part", ALL),
-    "beacon": ("example", ALL),
     "burgeoning": ("growing", ALL),
     "unwavering": ("steady", ALL),
     "ever-evolving": ("changing", ALL),
@@ -608,7 +598,7 @@ def fix_parallelism(text: str) -> str:
     text = _NOT_ONLY_RE.sub(_not_only, text)
 
     def _not_just(m: re.Match[str]) -> str:
-        return f"{m.group('subj')} {m.group('b').strip()}"
+        return f"{m.group('subj')} about {m.group('a').strip()} and {m.group('b').strip()}" if "about" in m.group(0) else m.group(0)
 
     return _NOT_JUST_RE.sub(_not_just, text)
 
@@ -652,7 +642,7 @@ def vary_rhythm(text: str, cfg: Optional[HumanizerConfig] = None) -> str:
             out.append(s)
             continue
         best = None
-        for m in re.finditer(r"(?:;\s+|,\s+(?P<conj>and|but|so|yet|while)\s+)", s):
+        for m in re.finditer(r"(?:;\s+|,\s+(?P<conj>and|but|so|yet)\s+)", s):
             left = s[: m.start()]
             right = s[m.end():]
             lw, rw = len(left.split()), len(right.split())
@@ -739,10 +729,9 @@ def rewrite(text: str, cfg: Optional[HumanizerConfig] = None, *, rhythm: bool = 
     if not text or not text.strip():
         return text
     locked, vault = lock_elements(text)
-    locked = drop_chatbot_sentences(locked)
     locked = apply_phrase_subs(locked, cfg)
-    locked = fix_parallelism(locked)
-    locked = split_tails(locked)
+    if cfg is None or cfg.use_structural:
+        locked = fix_parallelism(locked)
     locked = apply_word_subs(locked, cfg)
     locked = drop_transitions(locked, cfg)
     if cfg is None or cfg.use_structural:

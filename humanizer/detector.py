@@ -163,14 +163,22 @@ def _sentence_score(f: dict) -> float:
 # ---------------------------------------------------------------------------
 # Public API
 # ---------------------------------------------------------------------------
+def supported_script(text: str) -> bool:
+    """Reject primarily non-Latin writing; this is not language identification."""
+    letters = [c for c in text if c.isalpha()]
+    return not letters or sum(c.isascii() for c in letters) / len(letters) >= 0.8
+
+
 def analyze(text: str) -> dict:
     """Full analysis: overall score, per-signal breakdown, tell spans and sentence scores."""
-    text = (text or "").strip()
+    text = text or ""
     toks = [w.lower() for w in words(text)]
     n_words = len(toks)
     sents = split_sentences(text)
     base = {
-        "ai_score": 0.0,
+        "ai_score": 0.0,  # legacy numeric API field; consult score_available before display
+        "score_available": False,
+        "minimum_words": 40,
         "score_type": "writing_pattern_index",
         "calibrated": False,
         "score_explanation": SCORE_EXPLANATION,
@@ -188,8 +196,10 @@ def analyze(text: str) -> dict:
         "tells": [],
         "sentence_scores": [],
     }
-    if n_words < 8:
-        base["note"] = "too short to score reliably"
+    if n_words < 40 or not supported_script(text):
+        base["note"] = ("Use at least 40 words of English prose to compute a writing-pattern index."
+                        if supported_script(text) else "This analyzer supports English prose; this writing system is unsupported.")
+        base["verdict"] = "Insufficient English prose"
         return base
 
     lens = [len(s.split()) for s in sents] or [n_words]
@@ -203,7 +213,7 @@ def analyze(text: str) -> dict:
     if len(sents) >= 3:
         c_burst = _ramp(cv, 0.62, 0.22)  # CV 0.22 -> fully AI-like, 0.62 -> human-like
     else:
-        c_burst = 0.5
+        c_burst = 0.0
     # 2. Vocabulary — weighted tells per 100 words.
     tells = find_tells(text)
     tell_w = sum(t["weight"] for t in tells)
@@ -244,6 +254,9 @@ def analyze(text: str) -> dict:
         "structure": c_struct,
         "uniformity": c_uniform,
     }
+    if len(sents) < 3:
+        comps.pop("burstiness")
+        comps.pop("uniformity")
     if c_ppl is not None:
         comps["perplexity"] = c_ppl
     total_w = sum(_W[k] for k in comps)
@@ -252,9 +265,6 @@ def analyze(text: str) -> dict:
     peak = max(c_vocab, c_struct)
     score = 100.0 * (0.75 * raw + 0.25 * peak * (0.5 + 0.5 * c_burst))
 
-    # Short texts are noisy — pull toward the middle a little.
-    if n_words < 60:
-        score = 0.7 * score + 0.3 * 35.0
     confidence = "high" if n_words >= 150 and len(sents) >= 5 else ("medium" if n_words >= 60 else "low")
 
     score = round(max(0.0, min(100.0, score)), 1)
@@ -281,11 +291,17 @@ def analyze(text: str) -> dict:
         signals.append({"key": "perplexity", "label": "Predictability", "value": round(ppl, 1), "ai": round(c_ppl * 100),
                         "hint": "Very predictable word choices." if c_ppl > 0.5 else "Natural word choices."})
 
+    for signal in signals:
+        signal["available"] = signal["key"] in comps
+        if not signal["available"]:
+            signal["ai"] = None
+            signal["hint"] = "Needs at least three sentences; excluded from the index."
+
     # Sentence offsets for UI highlighting.
     sentence_scores = []
     cursor = 0
     for s, sc, f in zip(sents, sent_scores, feats, strict=True):
-        idx = text.find(s[:20], cursor)
+        idx = text.find(s, cursor)
         start = idx if idx >= 0 else cursor
         end = start + len(s)
         cursor = end
@@ -304,6 +320,7 @@ def analyze(text: str) -> dict:
 
     base.update({
         "ai_score": score,
+        "score_available": True,
         "verdict": verdict,
         "confidence": confidence,
         "perplexity": round(ppl, 1) if ppl is not None else None,
@@ -321,7 +338,7 @@ def analyze(text: str) -> dict:
 def score_text(text: str) -> dict:
     """Compact score dict (backwards compatible): ai_score, perplexity, burstiness, smooth_frac, ai_tells, sentences, ttr."""
     a = analyze(text)
-    keep = ("ai_score", "score_type", "calibrated", "score_explanation", "verdict", "confidence", "perplexity", "perplexity_source", "burstiness",
+    keep = ("score_available", "minimum_words", "ai_score", "score_type", "calibrated", "score_explanation", "verdict", "confidence", "perplexity", "perplexity_source", "burstiness",
             "smooth_frac", "ai_tells", "sentences", "words", "ttr", "signals")
     out = {k: a[k] for k in keep if k in a}
     if "note" in a:

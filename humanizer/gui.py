@@ -339,6 +339,9 @@ class HumanizerApp(tk.Tk):
         if not text:
             return
         res = score_text(text)
+        if not res["score_available"]:
+            self.lbl_score_badge.config(text="Pattern index: insufficient English prose", fg=self.PAL["accent"])
+            return
         sc = res["ai_score"]
         color = self.PAL["green"] if sc < 20.0 else (self.PAL["accent"] if sc < 50.0 else self.PAL["red"])
         self.lbl_score_badge.config(text=f"Pattern index: {sc:.1f}/100", fg=color)

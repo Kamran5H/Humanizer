@@ -19,11 +19,11 @@ def test_human_text_scores_low():
     assert score_text(HUMAN_TEXT)["ai_score"] < 30
 
 
-def test_rewrite_lowers_score(cfg):
+def test_rewrite_reduces_stock_vocabulary_without_optimizing_authorship(cfg):
     for item in CORPUS:
-        before = score_text(item["text"])["ai_score"]
-        after = score_text(rewrite(item["text"], cfg))["ai_score"]
-        assert after < before - 15, item["id"]
+        before = analyze(item["text"])["ai_tells"]
+        after = analyze(rewrite(item["text"], cfg))["ai_tells"]
+        assert after < before, item["id"]
 
 
 def test_short_text_is_not_scored():
