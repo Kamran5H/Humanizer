@@ -13,9 +13,9 @@ Multi-provider LLM pool with automatic failover.
 from __future__ import annotations
 
 import json
-import re
 import logging
 import os
+import re
 import socket
 import threading
 import time
