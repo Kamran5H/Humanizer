@@ -79,6 +79,10 @@ _WRAPPER_LEAD = re.compile(
     r"(?:the\s+)?(?:rewritten|revised|humaniz(?:ed|er)|edited|new|final)\s+(?:text|paragraph|version|line|sentence)[^:\n]{0,40}:\s*)",
     re.IGNORECASE,
 )
+_REFUSAL = re.compile(
+    r"^\s*(?:I'?m sorry|I (?:can(?:no|')t|am unable to|won'?t) (?:help|assist|rewrite|comply)|As an AI\b|I cannot fulfil)",
+    re.IGNORECASE,
+)
 _COT_TELLS = (
     "<think", "</think", "thinking process", "analyze user input", "mental iteration",
     "constraint check", "check against constraints", "here's a thinking process",
@@ -143,6 +147,13 @@ def _break_ai_syntactic_patterns(text: str) -> str:
 
 def _inflect_ing_to_3sg(verb_ing: str) -> str:  # backwards compatibility
     return ing_to_3sg(verb_ing)
+
+
+def _edit_ratio(src: str, cand: str) -> float:
+    """Share of words changed between source and candidate (0 = identical)."""
+    import difflib
+
+    return 1.0 - difflib.SequenceMatcher(None, src.lower().split(), cand.lower().split(), autojunk=False).ratio()
 
 
 def _clean_rewrite(src: str, out: str, cfg: Optional[HumanizerConfig] = None) -> str:
@@ -229,6 +240,8 @@ def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *
         return False, "empty"
     if _is_thinking_trace(cand):
         return False, "reasoning trace"
+    if _REFUSAL.match(cand) and not _REFUSAL.match(src):
+        return False, "model refused"
 
     # 1. Structure the document rebuild depends on.
     if Counter(_PLACEHOLDER.findall(src)) != Counter(_PLACEHOLDER.findall(cand)):
@@ -336,6 +349,9 @@ STYLE:
 - Never use these words: {_BANNED_WORDS}.
 - Never use these phrases: {_BANNED_PHRASES}.
 - {register}
+- Use one term per concept: do not alternate synonyms (patients/participants/subjects) for the same thing.
+- No vague attributions ("experts argue", "studies show") unless a citation follows. No empty evaluation sentences ("This is an important finding").
+- Keep logical connectives that carry meaning (thus, hence, in contrast, whereas, although).
 - Rewrite, do not summarise: every sentence's information must still be there, with the same line breaks.
 - The source has {n} words; return between {round(n * 0.85)} and {round(n * 1.15)} words.{_avoid_block(avoid_smooth)}
 
@@ -424,7 +440,7 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
     start = cfg.rng.randrange(len(personas))
 
     best_text: Optional[str] = None
-    best_score = 101.0
+    best_score = float("inf")
     last_failure = "No candidate received."
     hints: list[str] = []
     for attempt in range(budget):
@@ -452,6 +468,8 @@ def humanize_paragraph_stealth(text: str, cfg: HumanizerConfig) -> str:
             best_text = cand
             break
         score = score_text(cand).get("ai_score", 100.0)
+        if _edit_ratio(text, _strip_wrappers(raw) or cand) < 0.12:
+            score += 25.0  # under-edited: barely different from the source
         if score < best_score:
             best_score, best_text = score, cand
         if best_score <= cfg.target_pct:

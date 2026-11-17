@@ -41,6 +41,9 @@ CATEGORY_LABELS: dict[str, str] = {
     "chatbot": "Chatbot residue",
     "cutoff": "Knowledge-cutoff disclaimer",
     "dash": "Em-dash overuse",
+    "attribution": "Vague attribution",
+    "evaluation": "Content-free evaluation",
+    "adverb": "Ornamental adverb",
     "conclusion": "Generic upbeat conclusion",
 }
 
@@ -173,6 +176,16 @@ TELLS: tuple[Tell, ...] = (
     Tell("conclusion", r"\bonly time will tell\b", "delete"),
     Tell("conclusion", r"\bremains to be seen\b", "delete", 0.6),
     Tell("conclusion", r"\bexciting (?:times|possibilities|future)\b", "delete"),
+    # ---- From humanizer_academic / harshaneel/humanize -------------------------
+    Tell("attribution", r"\b(?:experts|observers|critics|scholars|researchers|studies|industry reports)\s+(?:argue|say|suggest|believe|agree|have (?:shown|found|argued|noted)|note)\b(?![^.]{0,80}(?:\[\d|\(\w+[^)]*\d{4}\)))",
+         "name the source or cite it", 0.8),
+    Tell("evaluation", r"\b(?:this|these|which) (?:is|are|represents?) (?:an? )?(?:important|significant|key|noteworthy|valuable|crucial) (?:finding|findings|step|insight|contribution|development)s?\b",
+         "state the consequence instead", 0.9),
+    Tell("evaluation", r"\bhas (?:important|significant|profound|far-reaching) implications\b", "say what follows", 0.8),
+    Tell("evaluation", r"\b(?:this|it) (?:highlights|underscores|emphasizes) the (?:importance|need|significance) of\b", "say why it matters", 1.0),
+    Tell("filler", r"\bit is (?:clear|evident|obvious) that\b", "assert directly"),
+    Tell("filler", r"\bdespite (?:these|its|their|the) (?:challenges|limitations|obstacles),", "state the limitation"),
+    Tell("adverb", r"\b(?:remarkably|strikingly|profoundly|exceptionally|undeniably|unquestionably|incredibly|truly|vastly)\b", "delete (ornamental)", 0.7),
     # ---- Dashes -------------------------------------------------------------------------
     Tell("dash", r"\s?—\s?|\s--\s", "comma, colon or period", 0.5),
 )
@@ -241,5 +254,7 @@ BANNED_PHRASES_FOR_PROMPT: tuple[str, ...] = (
     "in the realm of", "the landscape of", "paves the way", "sets the stage",
     "not only ... but also", "it's not just X, it's Y", "when it comes to",
     "a wide range of", "holds great promise", "the future looks bright",
-    "in conclusion", "I hope this helps", "let's dive in",
+    "in conclusion", "I hope this helps", "let's dive in", "it is clear that",
+    "this highlights the importance of", "experts argue", "despite these challenges",
+    "this is an important finding", "has important implications",
 )

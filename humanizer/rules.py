@@ -319,6 +319,12 @@ _PHRASES: list[tuple[str, object, str]] = [
     (r"\bboast\b(?= (?:a|an|the|over|more|some|many|\d))", "have", ALL),
     (r"\bin the heart of\b", "in", ALL),
     (r"\bnestled (?:in|within|among|between)\b", lambda m: m.group(0).split()[1], ALL),
+    # Direct assertion instead of announcing obviousness
+    (r"\bit is (?:clear|evident|obvious) that\s+", "", ALL),
+    (r"\b(?:despite|in spite of) (?:these|the|its|their) (?:challenges|limitations|obstacles),\s*", "Even so, ", ALL),
+    (r"(?:^|(?<=[.!?]\s))Beyond (?:this|that|these),\s*", "In addition, ", ALL),
+    # Ornamental adverbs that carry no information
+    (r"\b(?:remarkably|strikingly|exceptionally|undeniably|unquestionably|incredibly|truly)\s+(?=[a-z])", "", ALL),
     # Hedging
     (r"\b(could|may|might|can) potentially\b", r"\1", ALL),
     (r"\bit could be argued that\s+", "", ALL),
@@ -334,8 +340,8 @@ _TRANSITION_DROP = re.compile(
 )
 _TRANSITION_REPLACE: dict[str, tuple[str, ...]] = {
     # word -> alternatives ("" means drop the opener). Academic-safe options only.
-    "Furthermore": ("", "", "Also,"), "Moreover": ("", "", "Also,"), "Additionally": ("", "Also,"),
-    "In addition": ("", "Also,"), "Notably": ("",), "Importantly": ("",), "Ultimately": ("",),
+    "Furthermore": ("", "", "Also,", "In addition,"), "Moreover": ("", "", "Also,", "In addition,"),
+    "Additionally": ("", "Also,", "In addition,"), "In addition": ("", "Also,"), "Notably": ("",), "Importantly": ("",), "Ultimately": ("",),
     "Indeed": ("",), "Interestingly": ("",), "Crucially": ("",), "Undeniably": ("",),
     "Unquestionably": ("",), "Essentially": ("",), "In conclusion": ("",), "In summary": ("",),
     "To summarize": ("",), "To sum up": ("",), "In essence": ("",), "All in all": ("",),
@@ -547,7 +553,7 @@ def drop_transitions(text: str, cfg: Optional[HumanizerConfig] = None) -> str:
             return m.group(0)
         options = _TRANSITION_REPLACE.get(word, ("",))
         if sci:
-            options = tuple(o for o in options if o not in ("So",)) or ("",)
+            options = tuple(o for o in options if o not in ("So", "Also,")) or ("",)
         choice = options[rng.randrange(len(options))] if rng is not None else options[0]
         nxt = m.group("next")
         if not choice:
@@ -589,7 +595,7 @@ def split_tails(text: str) -> str:
         before = re.split(r"[.!?:;]\s", m.string[: m.start()])[-1]
         if _PAST_TENSE.search(before) or len(before.split()) < 4:
             return m.group(0)
-        return f". This {ing_to_3sg(m.group('verb'))}"
+        return f". This{_SPLIT_MARK} {ing_to_3sg(m.group('verb'))}"
 
     text = _THEREBY_RE.sub(_thereby, text)
 
@@ -603,9 +609,44 @@ def split_tails(text: str) -> str:
         verb = m.group("verb")
         head, _, rest = verb.partition(" ")
         main = _TAIL_VERBS.get(head, ing_to_3sg(head))
-        return f". This {main}{(' ' + rest) if rest else ''}"
+        return f". This{_SPLIT_MARK} {main}{(' ' + rest) if rest else ''}"
 
-    return _TAIL_RE.sub(_tail, text)
+    text = _TAIL_RE.sub(_tail, text)
+    return _finish_split_tails(text)
+
+
+_SPLIT_MARK = "\u2060"  # invisible marker for sentences created by split_tails
+_COORD_VERBS = set(_TAIL_VERBS) | {
+    "enhancing", "improving", "reducing", "increasing", "lowering", "raising", "boosting", "supporting",
+    "strengthening", "accelerating", "expanding", "promoting", "minimizing", "minimising", "maximizing",
+    "maximising", "optimizing", "optimising", "protecting", "preventing", "cutting", "saving",
+    "streamlining", "simplifying", "speeding", "helping", "allowing", "enabling", "encouraging", "building",
+    "creating", "driving", "giving", "offering", "providing", "ensuring", "making", "opening", "freeing",
+}
+
+
+def _finish_split_tails(text: str) -> str:
+    """Make coordinated verbs agree in sentences created by split_tails, or undo the split if unsure."""
+    if _SPLIT_MARK not in text:
+        return text
+
+    def _fix(m: re.Match[str]) -> str:
+        body = m.group(0)
+        bad = False
+
+        def _coord(c: re.Match[str]) -> str:
+            nonlocal bad
+            word = c.group(2)
+            if word.lower() in _COORD_VERBS:
+                return c.group(1) + (_TAIL_VERBS.get(word.lower()) or ing_to_3sg(word))
+            bad = True
+            return c.group(0)
+
+        fixed = re.sub(r"(\b(?:and|or)\s+)([a-z]+ing)\b", _coord, body)
+        return body if bad else fixed
+
+    text = re.sub(_SPLIT_MARK + r"[^.!?]*", _fix, text)
+    return text.replace(_SPLIT_MARK, "")
 
 
 def fix_parallelism(text: str) -> str:

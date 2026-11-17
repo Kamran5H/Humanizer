@@ -355,3 +355,34 @@ def test_connection_probe_records_real_success_and_auth_failure(monkeypatch):
     assert statuses["bad"]["status"] == "cooling_down"
     assert "auth failed" in statuses["bad"]["last_error"]
     assert all("api_key" not in entry for entry in statuses.values())
+
+
+def test_refusal_is_rejected():
+    assert check_fidelity("The catalyst lowered the barrier by 5%.",
+                          "I'm sorry, but I can't help with rewriting that text about 5%.")[0] is False
+
+
+def test_under_edited_candidate_loses_to_real_rewrite(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    src = ("Furthermore, it is important to note that machine learning algorithms analyze vast amounts of medical "
+           "data. This approach has been adopted in many hospitals since 2019, and it is widely used by clinicians "
+           "in radiology departments across the region.")
+    replies = iter([src.replace("vast", "large"),
+                    "Machine learning reads huge amounts of medical data. Many hospitals have used the approach since 2019. "
+                    "Clinicians in radiology departments across the region now rely on it widely, day to day."])
+    monkeypatch.setattr(engine, "call_llm_pool", lambda *a, **k: next(replies))
+    c = HumanizerConfig(use_gemini=True, stealth_level=2, retry_budget=2, target_pct=0, rng=random.Random(0))
+    out = engine.humanize_paragraph_stealth(src, c)
+    assert out.startswith("Machine learning reads")
+
+
+def test_only_under_edited_candidate_is_still_used(monkeypatch):
+    """A valid but lightly edited rewrite must not be discarded (regression: best_score started at 101)."""
+    monkeypatch.setenv("GROQ_API_KEY", "test-key")
+    src = ("Furthermore, machine learning algorithms analyze vast amounts of medical data in hospitals. Moreover, "
+           "this approach has been adopted widely, and it is used by clinicians in radiology departments every day.")
+    monkeypatch.setattr(engine, "call_llm_pool", lambda *a, **k: src.replace("vast", "large"))
+    monkeypatch.setattr(engine, "score_text", lambda t: {"ai_score": 100.0})
+    c = HumanizerConfig(use_gemini=True, stealth_level=2, retry_budget=2, rng=random.Random(0))
+    engine.humanize_paragraph_stealth(src, c)
+    assert c.stats.get("llm") == 1 and not c.stats.get("rules")
