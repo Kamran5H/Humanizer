@@ -86,6 +86,11 @@ UNFAITHFUL = [
     ("She called it \"statistically significant\".", "She called it \"significant\"."),
     ("The solution was 5 μM.", "The solution was 5 mM."),
     ("Without funding, the project cannot continue.", "With funding, the project can continue."),
+    # Invented claims (observed live from a real model) must be rejected.
+    ("Machine learning frameworks enabled advances in medical imaging and drug discovery.",
+     "Machine learning frameworks enabled advances in medical imaging and drug discovery. These tools also aid risk prediction for chronic diseases."),
+    ("Remote work lets employees avoid long commutes.",
+     "Remote work lets employees avoid long commutes. Regulatory frameworks governing taxation remain unsettled."),
 ]
 
 

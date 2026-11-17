@@ -386,3 +386,31 @@ def test_only_under_edited_candidate_is_still_used(monkeypatch):
     c = HumanizerConfig(use_gemini=True, stealth_level=2, retry_budget=2, rng=random.Random(0))
     engine.humanize_paragraph_stealth(src, c)
     assert c.stats.get("llm") == 1 and not c.stats.get("rules")
+
+
+def test_reasoning_models_get_room_and_low_effort():
+    p = {"max_tokens": 800}
+    providers._apply_reasoning_settings(p, "https://api.groq.com/openai/v1", "openai/gpt-oss-120b")
+    assert p["max_tokens"] > 2000 and p["reasoning_effort"] == "low"
+    q = {"max_tokens": 800}
+    providers._apply_reasoning_settings(q, "https://api.groq.com/openai/v1", "qwen/qwen3.8-27b")
+    assert q["reasoning_effort"] == "none"
+    plain = {"max_tokens": 800}
+    providers._apply_reasoning_settings(plain, "https://api.groq.com/openai/v1", "llama-3.3-70b-versatile")
+    assert plain == {"max_tokens": 800}
+
+
+def test_pool_waits_out_short_rate_limit(monkeypatch):
+    monkeypatch.setenv("GROQ_API_KEY", "k")
+    monkeypatch.setenv("GROQ_MODELS", "g")
+    calls = []
+
+    def fake(prompt, temperature, base, model, key, timeout=0, max_tokens=None):
+        calls.append(model)
+        if len(calls) == 1:
+            raise urllib.error.HTTPError(base, 429, "rate", {"retry-after": "1"}, io.BytesIO(b"slow down"))
+        return "ok"
+
+    monkeypatch.setattr(providers, "_call_endpoint", fake)
+    monkeypatch.setattr(providers, "_cool_endpoint", lambda b, m, s, r="": providers._COOLDOWNS.__setitem__(providers._ep_key(b, m), providers.time.time() + 0.2))
+    assert providers.call_llm_pool("hi") == "ok" and len(calls) == 2

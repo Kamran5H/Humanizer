@@ -163,6 +163,8 @@ def _clean_rewrite(src: str, out: str, cfg: Optional[HumanizerConfig] = None) ->
     if not out:
         return ""
     out = _fix_encoding(out)
+    if "\n" not in src.strip():
+        out = re.sub(r"\s*\n+\s*", " ", out)  # the source is one paragraph: keep it one
     out = _guard_fidelity(src, out)
     # Clean leftover stock phrases from the model output, but only keep the
     # polished version if it is still faithful to the source.
@@ -228,6 +230,45 @@ def _facts(text: str) -> set[str]:
             if not token.startswith(("__LOCK_TAG_", "__LOCK_PLACEHOLDER_"))}
 
 
+_CONTENT_WORD = re.compile(r"[A-Za-z][A-Za-z'-]{2,}")
+_GENERIC = {
+    # Connective/meta words a rewrite may add without adding information.
+    "also", "this", "that", "these", "those", "they", "them", "their", "its", "which", "while", "such",
+    "now", "then", "still", "even", "just", "already", "today", "overall", "both", "each", "every",
+    "many", "much", "more", "most", "less", "few", "several", "various", "other", "another", "same",
+    "way", "ways", "thing", "things", "part", "kind", "lot", "help", "helps", "make", "makes", "made",
+    "use", "uses", "used", "using", "work", "works", "get", "gets", "give", "gives", "take", "takes",
+    "show", "shows", "shown", "allow", "allows", "let", "lets", "keep", "keeps", "new", "real", "key",
+    "result", "results", "people", "case", "cases", "able", "need", "needs", "well", "better", "good",
+}
+
+
+def _stem5(word: str) -> str:
+    w = word.lower().strip("'-")
+    return w[:5] if len(w) > 5 else w
+
+
+def _invented_sentence(src: str, cand: str) -> Optional[str]:
+    """Return a candidate sentence that introduces content absent from the source, if any.
+
+    Paraphrases keep most key terms (diagnose -> diagnostic, costs -> cost); an
+    invented claim ('These tools also aid risk prediction for chronic diseases')
+    shares almost none. Comparison uses 5-letter prefixes to tolerate inflection.
+    """
+    from humanizer.nlp import _STOP
+
+    src_keys = {_stem5(w) for w in _CONTENT_WORD.findall(src)}
+    for sent in split_sentences(cand):
+        toks = [w for w in _CONTENT_WORD.findall(sent)
+                if w.lower() not in _STOP and w.lower() not in _GENERIC and not w.startswith("__")]
+        if len(toks) < 3:
+            continue
+        novel = [w for w in toks if _stem5(w) not in src_keys]
+        if len(novel) >= 3 and len(novel) / len(toks) >= 0.8:
+            return sent
+    return None
+
+
 def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *, short: bool = False) -> tuple[bool, str]:
     """Return (ok, reason).
 
@@ -285,6 +326,8 @@ def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *
             return False, "direction of claim changed"
     if not _is_faithful(src, cand):
         return False, "meaning drift"
+    if _invented_sentence(src, cand):
+        return False, "added information"
 
     if not short:
         sw, cw = len(src.split()), len(cand.split())

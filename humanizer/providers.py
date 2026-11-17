@@ -13,6 +13,7 @@ Multi-provider LLM pool with automatic failover.
 from __future__ import annotations
 
 import json
+import re
 import logging
 import os
 import socket
@@ -295,6 +296,24 @@ def _wait_for_slot(base_url: str, model: str, cfg: Optional[HumanizerConfig] = N
             time.sleep(wait)
 
 
+_REASONING_MODEL = re.compile(r"gpt-oss|qwen3|deepseek-r1|\br1\b|reason|think|\bo[134](?:-|$)|magistral", re.IGNORECASE)
+
+
+def _apply_reasoning_settings(payload: dict, base_url: str, model: str) -> None:
+    """Reasoning models spend hidden tokens before answering; without room or a low effort
+    setting they return blank content (observed live with Groq gpt-oss-120b)."""
+    if not _REASONING_MODEL.search(model):
+        return
+    payload["max_tokens"] = int(payload.get("max_tokens", 1024)) + 2048
+    host = urllib.parse.urlparse(base_url).hostname or ""
+    if host == "api.groq.com":
+        if "gpt-oss" in model:
+            payload["reasoning_effort"] = "low"
+            payload["reasoning_format"] = "hidden"
+        elif "qwen3" in model:
+            payload["reasoning_effort"] = "none"
+
+
 def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, api_key: str,
                    timeout: float = 90.0, max_tokens: Optional[int] = None) -> str:
     if urllib.parse.urlparse(base_url).hostname == "api.anthropic.com":
@@ -313,6 +332,7 @@ def _call_endpoint(prompt: str, temperature: float, base_url: str, model: str, a
     }
     if "openrouter.ai" in base_url:
         payload["include_reasoning"] = False
+    _apply_reasoning_settings(payload, base_url, model)
     req = urllib.request.Request(
         url,
         data=json.dumps(payload).encode("utf-8"),
@@ -469,8 +489,45 @@ def check_connections() -> list[dict]:
     return get_provider_status()
 
 
+_RATE_LIMIT_WAIT = float(os.environ.get("HUMANIZER_RATE_LIMIT_WAIT", "45"))
+
+
+def _soonest_ready_in() -> Optional[float]:
+    pool = _build_pool()
+    if not pool:
+        return None
+    now = time.time()
+    with _STATE_LOCK:
+        return min(max(0.0, _COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0) - now) for e in pool)
+
+
 def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperature: float = 0.9) -> str:
-    """Call the first healthy endpoint, failing over across the pool."""
+    """Call the first healthy endpoint, failing over across the pool.
+
+    When every endpoint is only briefly rate-limited, wait for the first one to
+    recover (cancellable) instead of failing: free tiers return 429 often, and
+    giving up immediately would push the paragraph to the offline engine.
+    """
+    for attempt in range(3):
+        try:
+            return _call_llm_pool_once(prompt, cfg, temperature)
+        except RuntimeError as e:
+            if "No LLM providers" in str(e) or "Cancelled" in str(e) or attempt == 2:
+                raise
+            wait = _soonest_ready_in()
+            if wait is None or wait > _RATE_LIMIT_WAIT:
+                raise
+            if cfg is not None:
+                cfg.status(f"Providers are rate-limited; retrying in {wait:.0f}s…")
+            deadline = time.time() + wait + 0.5
+            while time.time() < deadline:
+                if cfg is not None and cfg.cancelled:
+                    raise RuntimeError("Cancelled") from e
+                time.sleep(min(0.5, max(0.0, deadline - time.time())))
+    raise RuntimeError("All LLM providers failed.")
+
+
+def _call_llm_pool_once(prompt: str, cfg: Optional[HumanizerConfig] = None, temperature: float = 0.9) -> str:
     global _CALL_COUNTER
     pool = _build_pool()
     if not pool:
@@ -485,7 +542,7 @@ def call_llm_pool(prompt: str, cfg: Optional[HumanizerConfig] = None, temperatur
         with _STATE_LOCK:
             soonest = min(pool, key=lambda e: _COOLDOWNS.get(_ep_key(e["base_url"], e["model"]), 0.0))
             wait = _COOLDOWNS.get(_ep_key(soonest["base_url"], soonest["model"]), 0.0) - now
-        if wait > 20:
+        if wait > _RATE_LIMIT_WAIT:
             raise RuntimeError(f"All {len(pool)} LLM endpoints are cooling down (next ready in {wait:.0f}s).")
         time.sleep(max(0.0, wait))
         ready = [soonest]
