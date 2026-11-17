@@ -200,7 +200,7 @@ _WORDS: dict[str, tuple[str, str]] = {
     "synergies": ("combined benefits", GENERAL),
     "cornerstone": ("foundation", GENERAL),
     "bedrock": ("foundation", GENERAL),
-    "cutting-edge": ("advanced", GENERAL),
+    "cutting-edge": ("advanced", ALL),
     "vibrant": ("lively", GENERAL),
     "intricate": ("complex", GENERAL),
     "robust": ("strong", GENERAL),

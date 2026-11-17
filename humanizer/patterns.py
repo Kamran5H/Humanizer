@@ -151,7 +151,7 @@ TELLS: tuple[Tell, ...] = (
     Tell("hedging", r"\bit could be argued that\b", "delete or name who argues"),
     Tell("hedging", r"\bto some extent,? (?:it|this) (?:may|might|could)\b", "one qualifier"),
     # ---- Transitions (sentence-initial) ---------------------------------------------
-    Tell("transition", r"(?:^|(?<=[.!?]\s))(?:Furthermore|Moreover|Additionally|In addition|Notably|Importantly|Consequently|Ultimately|Indeed|Interestingly|Crucially|Undeniably|Overall|In conclusion|In summary|To summarize|In essence),", "drop or use 'Also'/'So'"),
+    Tell("transition", r"(?:^|(?<=[.!?]\s))(?:Furthermore|Moreover|Additionally|Notably|Importantly|Consequently|Ultimately|Indeed|Interestingly|Crucially|Undeniably|Overall|In conclusion|In summary|To summarize|In essence),", "drop or use 'Also'/'So'"),
     # ---- Shallow -ing tails -------------------------------------------------------
     Tell("tail", r",\s(?:thereby|thus)\s\w+ing\b", "split: 'This ...'"),
     Tell("tail", r",\s(?:highlighting|underscoring|showcasing|emphasizing|emphasising|reflecting|symbolizing|symbolising|contributing to|fostering|ensuring|paving|reinforcing|solidifying|cementing)\b", "split into its own sentence"),

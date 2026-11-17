@@ -32,7 +32,7 @@ _MODEL_NAME = "distilgpt2"
 _TORCH_STATE: dict[str, object] = {}
 
 _TRANSITION_START = re.compile(
-    r"^[\"'“(]*(?:Furthermore|Moreover|Additionally|In addition|Notably|Importantly|Consequently|"
+    r"^[\"'“(]*(?:Furthermore|Moreover|Additionally|Notably|Importantly|Consequently|"
     r"Ultimately|Indeed|Interestingly|Crucially|Overall|In conclusion|In summary|Thus|Therefore|"
     r"Hence|However|Nevertheless|Nonetheless|Similarly|Likewise|Specifically|Essentially)\b,?"
 )
