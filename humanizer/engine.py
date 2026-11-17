@@ -240,11 +240,16 @@ _GENERIC = {
     "use", "uses", "used", "using", "work", "works", "get", "gets", "give", "gives", "take", "takes",
     "show", "shows", "shown", "allow", "allows", "let", "lets", "keep", "keeps", "new", "real", "key",
     "result", "results", "people", "case", "cases", "able", "need", "needs", "well", "better", "good",
+    "therefore", "thereby", "thus", "hence", "however", "moreover", "furthermore", "additionally",
+    "consequently", "accordingly", "meanwhile", "instead", "indeed", "particularly", "especially",
+    "yet", "although", "though", "whereas", "because", "since", "rather",
 }
 
 
 def _stem5(word: str) -> str:
     w = word.lower().strip("'-")
+    if len(w) > 3 and w.endswith("s") and not w.endswith("ss"):
+        w = w[:-1]  # aids -> aid, doctors -> doctor
     return w[:5] if len(w) > 5 else w
 
 
@@ -261,10 +266,35 @@ def _invented_sentence(src: str, cand: str) -> Optional[str]:
     for sent in split_sentences(cand):
         toks = [w for w in _CONTENT_WORD.findall(sent)
                 if w.lower() not in _STOP and w.lower() not in _GENERIC and not w.startswith("__")]
-        if len(toks) < 3:
+        if len(toks) < 2:
             continue
         novel = [w for w in toks if _stem5(w) not in src_keys]
-        if len(novel) >= 3 and len(novel) / len(toks) >= 0.8:
+        if len(toks) == 2 and len(novel) == 2:
+            return sent  # e.g. "The results remain promising." when the source says nothing of the sort
+        if len(novel) >= 3 and len(novel) / len(toks) >= 0.75:
+            return sent
+    return None
+
+
+_FILLER_WORDS = {"important", "note", "noting", "worth", "mention", "mentioning", "essential", "crucial",
+                 "conclusion", "summary", "fast-paced", "world", "today's", "landscape", "realm", "testament",
+                 "pivotal", "paramount", "ever-evolving", "navigate", "complexities", "imperative", "significant",
+                 "remarkable", "unprecedented", "transformative", "fundamentally", "profound", "myriad", "various"}
+
+
+def _dropped_sentence(src: str, cand: str) -> Optional[str]:
+    """Return a source sentence whose substance is missing from the candidate, if any."""
+    from humanizer.nlp import _STOP
+
+    cand_keys = {_stem5(w) for w in _CONTENT_WORD.findall(cand)}
+    for sent in split_sentences(src):
+        toks = [w for w in _CONTENT_WORD.findall(sent)
+                if w.lower() not in _STOP and w.lower() not in _GENERIC and w.lower() not in _FILLER_WORDS
+                and not w.startswith("__")]
+        if len(toks) < 4:
+            continue
+        kept = sum(1 for w in toks if _stem5(w) in cand_keys)
+        if kept / len(toks) < 0.3:
             return sent
     return None
 
@@ -328,10 +358,12 @@ def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *
         return False, "meaning drift"
     if _invented_sentence(src, cand):
         return False, "added information"
+    if not short and _dropped_sentence(src, cand):
+        return False, "information dropped"
 
     if not short:
         sw, cw = len(src.split()), len(cand.split())
-        lo = cfg.min_length_ratio if cfg else 0.75
+        lo = cfg.min_length_ratio if cfg else 0.62
         hi = cfg.max_length_ratio if cfg else 1.45
         if cw < sw * lo or cw > max(sw * hi, sw + 12):
             return False, "length out of range"
@@ -392,6 +424,7 @@ STYLE:
 - Never use these words: {_BANNED_WORDS}.
 - Never use these phrases: {_BANNED_PHRASES}.
 - {register}
+- When a qualifier (may, could, potential, suggests) covers several items, keep it attached to every item. Do not split them into separate sentences that state the items as facts.
 - Use one term per concept: do not alternate synonyms (patients/participants/subjects) for the same thing.
 - No vague attributions ("experts argue", "studies show") unless a citation follows. No empty evaluation sentences ("This is an important finding").
 - Keep logical connectives that carry meaning (thus, hence, in contrast, whereas, although).

@@ -30,7 +30,7 @@ class HumanizerConfig:
     retry_budget: int = 4          # max candidates per paragraph at level >= 2
     target_pct: float = 10.0       # stop early once the local AI score is at or below this
     gemini_temperature: float = 0.9
-    min_length_ratio: float = 0.75  # reject rewrites shorter than this fraction of the source
+    min_length_ratio: float = 0.62  # AI drafts are padded; content checks guard against real loss
     max_length_ratio: float = 1.45  # reject rewrites longer than this multiple of the source
     parallel_workers: int = 4
 

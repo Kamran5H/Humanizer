@@ -89,6 +89,11 @@ UNFAITHFUL = [
     # Invented claims (observed live from a real model) must be rejected.
     ("Machine learning frameworks enabled advances in medical imaging and drug discovery.",
      "Machine learning frameworks enabled advances in medical imaging and drug discovery. These tools also aid risk prediction for chronic diseases."),
+    ("Machine learning algorithms can analyze vast amounts of medical data, thereby enabling earlier detection of diseases such as cancer.",
+     "Machine learning algorithms can analyze large medical datasets, enabling earlier detection of diseases such as cancer. "
+     "The technology therefore offers new possibilities for clinical practice."),
+    ("AI tools improved diagnostic accuracy in two hospitals.",
+     "AI tools improved diagnostic accuracy in two hospitals. The results remain promising."),
     ("Remote work lets employees avoid long commutes.",
      "Remote work lets employees avoid long commutes. Regulatory frameworks governing taxation remain unsettled."),
 ]
@@ -103,3 +108,24 @@ def test_faithful_paraphrases_pass(src, cand):
 @pytest.mark.parametrize("src,cand", UNFAITHFUL)
 def test_meaning_changes_fail(src, cand):
     assert not check_fidelity(src, cand, short=True)[0]
+
+
+def test_dropped_sentence_is_rejected():
+    src = ("The trial enrolled patients from three hospitals. Side effects included nausea and mild headaches in "
+           "older adults. The drug lowered blood pressure.")
+    assert check_fidelity(src, "The trial enrolled patients from three hospitals. The drug lowered blood pressure.") == (
+        False, "information dropped")
+
+
+def test_concise_rewrite_of_padded_text_is_accepted():
+    src = ("Furthermore, it is important to note that in today's fast-paced world, remote work has fundamentally "
+           "transformed the way organizations operate, enabling employees to work from anywhere and giving them "
+           "greater flexibility over their schedules.")
+    cand = ("Remote work has changed the way organizations operate. Employees can now work from anywhere, "
+            "and they have more flexibility over their own schedules.")
+    assert check_fidelity(src, cand)[0]
+
+
+def test_paraphrase_with_connective_is_not_flagged_as_invented():
+    src = "While these systems serve as valuable aids, the ultimate responsibility for patient care remains with the treating physician."
+    assert check_fidelity(src, "The systems aid, yet do not replace, doctors: responsibility for patient care stays with the treating physician.")[0]
