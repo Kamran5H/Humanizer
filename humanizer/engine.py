@@ -42,9 +42,9 @@ from humanizer.document import (  # noqa: F401  (re-exported for backwards compa
 )
 from humanizer.nlp import fix_encoding as _fix_encoding
 from humanizer.nlp import is_faithful as _is_faithful
-from humanizer.patterns import BANNED_FOR_PROMPT
+from humanizer.patterns import BANNED_FOR_PROMPT, BANNED_PHRASES_FOR_PROMPT
 from humanizer.providers import call_llm_pool, has_providers
-from humanizer.rules import lock_elements, rewrite
+from humanizer.rules import lock_elements, polish, rewrite
 from humanizer.text import ing_to_3sg, split_sentences
 
 logger = logging.getLogger(__name__)
@@ -68,6 +68,7 @@ _SCI_PERSONAS = [
 ]
 
 _BANNED_WORDS = ", ".join(BANNED_FOR_PROMPT)
+_BANNED_PHRASES = "; ".join(f'"{p}"' for p in BANNED_PHRASES_FOR_PROMPT)
 
 # ---------------------------------------------------------------------------
 # Output cleaning
@@ -152,8 +153,11 @@ def _clean_rewrite(src: str, out: str, cfg: Optional[HumanizerConfig] = None) ->
         return ""
     out = _fix_encoding(out)
     out = _guard_fidelity(src, out)
-    # Do not run the offline substitution/sentence-splitting pipeline on a model
-    # rewrite: it can damage carefully chosen wording and change its meaning.
+    # Clean leftover stock phrases from the model output, but only keep the
+    # polished version if it is still faithful to the source.
+    polished = polish(out, cfg)
+    if polished != out and check_fidelity(src, polished, cfg, short=True)[0]:
+        return polished
     return out
 
 
@@ -164,61 +168,111 @@ _NUM = re.compile(r"(?<![\w.])[+−-]?\d+(?:[.,]\d+)*(?:[eE][+−-]?\d+)?(?![\w]
 _PLACEHOLDER = re.compile(r"__(?:RUN_LOCKED|RUN_PLACEHOLDER|LOCK_[A-Z_]+)_\d+__")
 _TAG_OPEN = re.compile(r"<(bi|b|i|u)\s+id=['\"](\d+)['\"]>", re.IGNORECASE)
 _CITE = re.compile(r"\[\d+(?:\s*[,\-–]\s*\d+)*\]|\([A-Z][A-Za-z'’\-]+(?: et al\.?)?,? (?:19|20)\d{2}[a-z]?\)")
-_NEGATION = re.compile(r"\b(?:no|never|neither|nor|without)\b|\bnot\b(?!\s+only\b)|n['’]t\b", re.IGNORECASE)
-_UNCERTAINTY = re.compile(r"\b(?:may|might|could|potential(?:ly)?|possibly|likely|unlikely|suggest(?:s|ed)?|appears?)\b", re.IGNORECASE)
-
-
+# Meaning guards. These are lexicon based, so they are tuned to catch the
+# errors that matter (a dropped negation, a removed hedge, an added certainty,
+# a reversed trend) while letting ordinary rewording through: "did not reduce"
+# -> "failed to lower" and "rose" -> "climbed" must pass; "did not reduce" ->
+# "reduced" and "rose" -> "fell" must fail.
+_NEGATION = re.compile(
+    r"\b(?:no|never|neither|nor|none|nobody|nothing|nowhere|without|cannot|unable|impossible|"
+    r"fail(?:s|ed|ing)?\s+to|lack(?:s|ed|ing)?|absence\s+of|absent|neglig\w*|insignificant)\b|"
+    r"\bnot\b(?!\s+only\b)|n['’]t\b",
+    re.IGNORECASE,
+)
+_UNCERTAINTY = re.compile(
+    r"\b(?:may|might|could|can|potential(?:ly)?|possib(?:le|ly|ility)|likely|unlikely|probabl[ey]|perhaps|"
+    r"suggest(?:s|ed|ing|ive)?|indicat(?:e|es|ed|ing|ive)|appear(?:s|ed)?|seem(?:s|ed)?|tend(?:s|ed)?\s+to|"
+    r"point(?:s|ed)?\s+to|hint(?:s|ed)?|preliminary|tentative(?:ly)?|plausibl[ey]|presumabl[ey]|"
+    r"hypothes\w+|estimat\w+|approximately|about|around|roughly|some)\b",
+    re.IGNORECASE,
+)
+_WEAK_HEDGE = re.compile(r"\b(?:may|might|could|possibly|perhaps|potential(?:ly)?|conceivabl[ey])\b", re.IGNORECASE)
+_STRONG_HEDGE = re.compile(r"\b(?:likely|probabl[ey]|presumabl[ey]|most\s+likely|almost\s+certainly)\b", re.IGNORECASE)
+_CERTAINTY = re.compile(
+    r"\b(?:prov(?:e|es|ed|en|ing)|definitive(?:ly)?|definitely|certain(?:ly)?|undoubtedly|unquestionabl[ey]|"
+    r"conclusive(?:ly)?|always|guarantee[sd]?|establish(?:es|ed)\s+that|clearly\s+(?:show|demonstrat)\w*)\b",
+    re.IGNORECASE,
+)
 _DIRECTION = re.compile(
-    r"\b(?P<up>increas\w*|rais(?:e|es|ed|ing)|rose|ris(?:e|es|ing))\b|"
-    r"\b(?P<down>decreas\w*|reduc\w*|lower(?:s|ed|ing)?|fell|fall(?:s|ing)?)\b", re.IGNORECASE,
+    r"\b(?P<up>increas\w*|rais(?:e|es|ed|ing)|rose|ris(?:e|es|en|ing)|gr[eo]w(?:s|n|ing|th)?|climb\w*|boost\w*|"
+    r"surg\w*|jump\w*|soar\w*|doubl\w*|tripl\w*|expand\w*|higher|greater|more|gain(?:s|ed)?)\b|"
+    r"\b(?P<down>decreas\w*|reduc\w*|lower(?:s|ed|ing)?|fell|fall(?:s|en|ing)?|drop\w*|declin\w*|cut(?:s|ting)?|"
+    r"shr[iau]nk\w*|diminish\w*|plung\w*|halv\w*|less|fewer|loss(?:es)?|lost)\b",
+    re.IGNORECASE,
 )
 
 
 def _directions(text: str) -> Counter:
-    """Conservative check for common quantitative direction reversals."""
     return Counter(m.lastgroup for m in _DIRECTION.finditer(text))
 
 
+def _norm_fact(span: str) -> str:
+    span = span.replace("“", '"').replace("”", '"').replace("‘", "'").replace("’", "'").replace("−", "-")
+    return re.sub(r"\s+", "", span)
+
+
+def _facts(text: str) -> set[str]:
+    _, vault = lock_elements(text)
+    return {_norm_fact(span) for token, span in vault.items()
+            if not token.startswith(("__LOCK_TAG_", "__LOCK_PLACEHOLDER_"))}
+
+
 def check_fidelity(src: str, cand: str, cfg: Optional[HumanizerConfig] = None, *, short: bool = False) -> tuple[bool, str]:
-    """Return (ok, reason). Every number, citation, placeholder and tag in `src` must survive."""
+    """Return (ok, reason).
+
+    Hard requirements: every number, citation, URL, quantity, statistic, quotation,
+    placeholder and formatting tag in `src` survives and nothing new is invented;
+    no negation is dropped; uncertainty is neither removed nor upgraded to
+    certainty; no quantitative trend is reversed; the meaning stays on topic.
+    """
     if not cand or not cand.strip():
         return False, "empty"
     if _is_thinking_trace(cand):
         return False, "reasoning trace"
-    # A conservative safeguard, not a semantic-equivalence test. Word overlap
-    # alone treats 'did reduce' and 'did not reduce' as virtually identical.
-    if len(_NEGATION.findall(src)) != len(_NEGATION.findall(cand)):
-        return False, "negation changed"
-    if Counter(w.lower() for w in _UNCERTAINTY.findall(src)) != Counter(w.lower() for w in _UNCERTAINTY.findall(cand)):
-        return False, "uncertainty changed"
-    if _PLACEHOLDER.findall(src) != _PLACEHOLDER.findall(cand):
-        return False, "placeholder changed or reordered"
-    source_tags = [m.groups() for m in _TAG_OPEN.finditer(src)]
-    candidate_tags = [m.groups() for m in _TAG_OPEN.finditer(cand)]
-    complete_tags = [(m.group("tag"), m.group("id")) for m in _TOKEN_PATTERN.finditer(cand) if m.group("tag")]
-    closing_tags = re.findall(r"</(bi|b|i|u)(?:\s+id=['\"]\d+['\"])?\s*>", cand, re.IGNORECASE)
-    if (source_tags != candidate_tags or candidate_tags != complete_tags
-            or Counter(t[0] for t in candidate_tags) != Counter(closing_tags)):
-        return False, "formatting tags changed or malformed"
-    if Counter(_CITE.findall(src)) != Counter(_CITE.findall(cand)):
-        return False, "citation dropped or introduced"
-    src_nums = Counter(n.replace(",", "") for n in _NUM.findall(src))
-    cand_nums = Counter(n.replace(",", "") for n in _NUM.findall(cand))
-    if src_nums != cand_nums:
-        return False, "number changed"
-    # Compare complete protected spans, not just digits: 5 mg and 5 kg,
-    # p < 0.05 and p > 0.05 carry different claims. Multiplicity matters.
-    def facts(value):
-        _, vault = lock_elements(value)
-        return Counter(span for token, span in vault.items()
-                       if not token.startswith(("__LOCK_TAG_", "__LOCK_PLACEHOLDER_")))
 
-    if facts(src) != facts(cand):
+    # 1. Structure the document rebuild depends on.
+    if Counter(_PLACEHOLDER.findall(src)) != Counter(_PLACEHOLDER.findall(cand)):
+        return False, "placeholder dropped or duplicated"
+    src_tags = Counter(m.groups() for m in _TAG_OPEN.finditer(src))
+    cand_tags = Counter(m.groups() for m in _TAG_OPEN.finditer(cand))
+    complete = Counter((m.group("tag"), m.group("id")) for m in _TOKEN_PATTERN.finditer(cand) if m.group("tag"))
+    closing = Counter(t.lower() for t in re.findall(r"</(bi|b|i|u)(?:\s+id=['\"]\d+['\"])?\s*>", cand, re.IGNORECASE))
+    if src_tags != cand_tags or cand_tags != complete or Counter(t[0].lower() for t in cand_tags.elements()) != closing:
+        return False, "formatting tags changed or malformed"
+
+    # 2. Hard facts: nothing dropped, nothing invented.
+    # Every occurrence must survive (a repeated value can carry a separate claim);
+    # nothing new may appear. Repeating an existing value is harmless.
+    src_cites, cand_cites = Counter(_CITE.findall(src)), Counter(_CITE.findall(cand))
+    if src_cites - cand_cites or set(cand_cites) - set(src_cites):
+        return False, "citation dropped or introduced"
+    src_nums = Counter(n.replace(",", "").replace("−", "-") for n in _NUM.findall(src))
+    cand_nums = Counter(n.replace(",", "").replace("−", "-") for n in _NUM.findall(cand))
+    if src_nums - cand_nums or set(cand_nums) - set(src_nums):
+        return False, "number changed"
+    if _facts(src) - _facts(cand):
         return False, "protected fact changed"
-    if _directions(src) != _directions(cand):
-        return False, "direction of claim changed"
+
+    # 3. Meaning guards.
+    src_neg, cand_neg = len(_NEGATION.findall(src)), len(_NEGATION.findall(cand))
+    if cand_neg < src_neg or cand_neg > src_neg + 1:
+        return False, "negation changed"
+    src_hedge, cand_hedge = len(_UNCERTAINTY.findall(src)), len(_UNCERTAINTY.findall(cand))
+    if src_hedge and not cand_hedge:
+        return False, "uncertainty changed"
+    if len(_CERTAINTY.findall(cand)) > len(_CERTAINTY.findall(src)):
+        return False, "uncertainty changed"
+    # 'might' -> 'likely' upgrades a possibility to a probability.
+    src_weak, cand_weak = len(_WEAK_HEDGE.findall(src)), len(_WEAK_HEDGE.findall(cand))
+    if src_weak and not cand_weak and len(_STRONG_HEDGE.findall(cand)) > len(_STRONG_HEDGE.findall(src)):
+        return False, "uncertainty changed"
+    sd, cd = _directions(src), _directions(cand)
+    for way, other in (("up", "down"), ("down", "up")):
+        if sd[way] and not cd[way] and cd[other] > sd[other]:
+            return False, "direction of claim changed"
     if not _is_faithful(src, cand):
         return False, "meaning drift"
+
     if not short:
         sw, cw = len(src.split()), len(cand.split())
         lo = cfg.min_length_ratio if cfg else 0.75
@@ -240,36 +294,50 @@ def _avoid_block(avoid_smooth: Optional[list[str]]) -> str:
             "(different clause order, more specific words, different length) while keeping every fact:\n" + bullets)
 
 
+_KEY_QUALIFIERS = re.compile(
+    r"\b(?:not|no|never|without|cannot|may|might|could|possibly|potentially|likely|unlikely|probably|perhaps|"
+    r"suggest(?:s|ed)?|appear(?:s|ed)?|seem(?:s|ed)?)\b|n['’]t\b",
+    re.IGNORECASE,
+)
+
+
 def build_stealth_prompt(text: str, persona: str, is_short: bool, avoid_smooth: Optional[list[str]] = None,
                          scientific: bool = False) -> str:
-    keep = ("Preserve every fact, claim, number, unit, name, date, quotation, technical term, citation and URL "
-            "that actually appears in the source. Preserve negation, qualifications, uncertainty and causal relationships. "
-            "If formatting tags or locked tokens appear in the source, retain each exactly once, in order, with paired tags intact. "
-            "Do not introduce tags or tokens that are absent from the source. "
-            "Add no facts, examples, sources, references or URLs, and remove no information.")
-    qualifiers = _NEGATION.findall(text) + _UNCERTAINTY.findall(text)
-    if qualifiers:
-        keep += " Retain these source qualifiers verbatim, with their original scope: " + ", ".join(qualifiers) + "."
+    keep = ("ACCURACY (non-negotiable): keep every fact, claim, number, unit, name, date, quotation, technical term, "
+            "citation such as [3] or (Smith, 2020), and URL exactly as in the source. Keep every negation and every "
+            "hedge: never turn 'may', 'suggests' or 'could' into a certainty, and never drop a 'not'. Keep the direction "
+            "of every trend (an increase stays an increase). Add no facts, examples, sources or URLs; remove no information. "
+            "Keep every placeholder such as __RUN_LOCKED_0__ and every tag such as <b id='2'>…</b> exactly once, around the same words.")
+    quals = []
+    for q in _KEY_QUALIFIERS.findall(text):
+        q = q.lower()
+        if q not in quals:
+            quals.append(q)
+    if quals:
+        keep += " Qualifiers in this text that must keep their meaning: " + ", ".join(quals[:12]) + "."
     if is_short:
         return (f"Rewrite this short line as {persona} would, plainly and without hype. {keep} "
-                "Keep it about the same length. Prefer direct, natural wording; preserve technical terminology.\n"
+                f"Keep it about the same length. Avoid: {_BANNED_WORDS}.\n"
                 "Return only the rewritten line.\n\nLINE:\n" + text)
     register = ("Formal academic register: no contractions, no slang, no rhetorical questions. Prefer active verbs "
                 "('we measured', 'the catalyst lowers') over heavy nominalisations. Keep domain terminology exactly."
                 if scientific else
                 "Natural professional register: contractions are fine, active voice, no slang, no hype.")
+    n = len(text.split())
     return f"""Rewrite the TEXT so it reads as if {persona} wrote it by hand.
 
 {keep}
 
-Style rules:
-- Vary sentence openings and rhythm where it improves readability without changing the claims.
-- Replace repetitive boilerplate with direct equivalents. Use precise, natural language.
-- Keep technical terms, meaningful enumerations, and the author's degree of certainty.
-- Do not strengthen a possibility into an established result or invent a causal explanation.
+STYLE:
+- Vary sentence length a lot: mix short sentences (4-9 words) with longer ones (20-30 words). Never write three sentences of similar length in a row.
+- Vary how sentences begin. Do not open sentences with Furthermore, Moreover, Additionally, Notably, Ultimately or In conclusion.
+- Use plain, specific words. Say "is", "are" or "has" instead of "serves as", "stands as" or "boasts".
+- No em dashes. No "not only ... but also". No ", highlighting/underscoring/fostering ..." tails.
+- Never use these words: {_BANNED_WORDS}.
+- Never use these phrases: {_BANNED_PHRASES}.
 - {register}
-- Rewrite the prose without summarizing it. Retain each sentence's information and the same line breaks.
-- The source contains {len(text.split())} words. Return about {len(text.split())} words, between {round(len(text.split()) * 0.85)} and {round(len(text.split()) * 1.15)} words.{_avoid_block(avoid_smooth)}
+- Rewrite, do not summarise: every sentence's information must still be there, with the same line breaks.
+- The source has {n} words; return between {round(n * 0.85)} and {round(n * 1.15)} words.{_avoid_block(avoid_smooth)}
 
 Return only the rewritten text: no preamble, notes, quotes or markdown fences.
 

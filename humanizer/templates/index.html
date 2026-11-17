@@ -584,7 +584,7 @@ code{font:12px var(--mono);background:var(--surface-2);padding:1px 5px;border-ra
     state.jobSource = text; state.jobFileName = state.fileName;
     setBusy(true);
     try {
-      const body = { text, scientific: state.register === 'academic', stealth_level: Number(state.level), target_pct: 10, use_gemini: state.engine !== 'offline', allow_offline_fallback: false, rewrite_headings: true, session_docx: state.sessionDocx };
+      const body = { text, scientific: state.register === 'academic', stealth_level: Number(state.level), target_pct: 10, use_gemini: state.engine !== 'offline', allow_offline_fallback: state.engine === 'offline' ? true : !!(state.health && state.health.llm_configured), rewrite_headings: true, session_docx: state.sessionDocx };
       const { job_id } = await api('/api/jobs', {method: 'POST', body: JSON.stringify(body)});
       state.jobId = job_id; poll();
     } catch (e) { setBusy(false); toast(e.message, true); }

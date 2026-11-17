@@ -191,7 +191,15 @@ _WORDS: dict[str, tuple[str, str]] = {
     "bustling": ("busy", ALL),
     "utilization": ("use", ALL),
     "utilisation": ("use", ALL),
-    # General register only (these are legitimate in technical prose).
+    # General register only (these are legitimate in technical prose or have
+    # literal senses: Old Testament, a radio beacon, drug synergy, a woven tapestry).
+    "tapestry": ("mix", GENERAL),
+    "realm": ("field", GENERAL),
+    "realms": ("fields", GENERAL),
+    "synergy": ("cooperation", GENERAL),
+    "synergies": ("combined benefits", GENERAL),
+    "cornerstone": ("foundation", GENERAL),
+    "bedrock": ("foundation", GENERAL),
     "cutting-edge": ("advanced", GENERAL),
     "vibrant": ("lively", GENERAL),
     "intricate": ("complex", GENERAL),
@@ -566,10 +574,21 @@ _COMMON_STARTERS = {
 }
 
 
+_PAST_TENSE = re.compile(
+    r"\b(?:was|were|had|did|fell|rose|grew|led|made|became|began|showed|shown|found|took|gave|saw|went|came|ran|"
+    r"got|kept|left|held|brought|built|cut|met|paid|sold|told|thought|won|drove|wrote|chose|spent|sent|lost|"
+    r"[a-z]{3,}ed)\b",
+    re.IGNORECASE,
+)
+
+
 def split_tails(text: str) -> str:
     """Turn shallow participial tails into their own sentence (", highlighting X" -> ". This shows X")."""
 
     def _thereby(m: re.Match[str]) -> str:
+        before = re.split(r"[.!?:;]\s", m.string[: m.start()])[-1]
+        if _PAST_TENSE.search(before) or len(before.split()) < 4:
+            return m.group(0)
         return f". This {ing_to_3sg(m.group('verb'))}"
 
     text = _THEREBY_RE.sub(_thereby, text)
@@ -579,6 +598,8 @@ def split_tails(text: str) -> str:
         before = re.split(r"[.!?:;]\s", m.string[: m.start()])[-1]
         if len(before.split()) < 6 or before.count("(") != before.count(")"):
             return m.group(0)
+        if _PAST_TENSE.search(before):
+            return m.group(0)  # "This reduces" would turn a past event into a present claim
         verb = m.group("verb")
         head, _, rest = verb.partition(" ")
         main = _TAIL_VERBS.get(head, ing_to_3sg(head))
@@ -729,9 +750,11 @@ def rewrite(text: str, cfg: Optional[HumanizerConfig] = None, *, rhythm: bool = 
     if not text or not text.strip():
         return text
     locked, vault = lock_elements(text)
+    locked = drop_chatbot_sentences(locked)
     locked = apply_phrase_subs(locked, cfg)
     if cfg is None or cfg.use_structural:
         locked = fix_parallelism(locked)
+        locked = split_tails(locked)
     locked = apply_word_subs(locked, cfg)
     locked = drop_transitions(locked, cfg)
     if cfg is None or cfg.use_structural:
