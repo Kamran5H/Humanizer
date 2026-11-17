@@ -145,3 +145,38 @@ def test_find_tells_spans_are_exact():
         assert text[t["start"]:t["end"]] == t["text"]
     cats = {t["category"] for t in find_tells(text)}
     assert {"vocabulary", "transition"} <= cats
+
+
+def test_research_derived_rules(cfg):
+    # humanizer_academic: ornamental adverbs, "it is clear that", formulaic challenge openers
+    out = rewrite("It is clear that the method is remarkably fast. Despite these challenges, the yield rose to 82%.", cfg)
+    assert "It is clear" not in out and "remarkably" not in out and "Despite these challenges" not in out
+    assert "82%" in out and "fast" in out
+
+
+def test_academic_register_keeps_cohesion(cfg):
+    # Academic register never swaps an additive opener for the informal "Also,"
+    for seed in range(6):
+        cfg.rng.seed(seed)
+        out = rewrite("The samples were dried overnight. Furthermore, the samples were weighed twice.", cfg)
+        assert "Also," not in out
+
+
+def test_new_tells_detected():
+    from humanizer.patterns import find_tells
+
+    cats = {t["category"] for t in find_tells(
+        "Experts argue that this is an important finding. This highlights the importance of funding.")}
+    assert {"attribution", "evaluation"} <= cats
+    # A cited claim is not a vague attribution.
+    assert "attribution" not in {t["category"] for t in find_tells("Studies have shown benefits [3].")}
+
+
+def test_split_tails_keeps_coordinated_verbs_grammatical():
+    out = split_tails("The tools can reduce diagnostic errors, thereby improving patient outcomes and enhancing the quality of care.")
+    assert out == "The tools can reduce diagnostic errors. This improves patient outcomes and enhances the quality of care."
+    # Gerund nouns are never conjugated.
+    assert "engineering courses" in split_tails("The new platform supports many universities, enabling remote learning and engineering courses.")
+    # Past-tense clauses are never split (tense would change).
+    t = "The pressure fell, thereby reducing the output under these conditions."
+    assert split_tails(t) == t

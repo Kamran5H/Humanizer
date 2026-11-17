@@ -153,8 +153,21 @@ def _summary(a: dict) -> dict:
     return {k: a.get(k) for k in ("score_available", "minimum_words", "ai_score", "verdict", "confidence", "burstiness", "ai_tells", "sentences", "words", "signals")}
 
 
+def _engine_warnings(req: HumanizeRequest, cfg: HumanizerConfig) -> list[str]:
+    out = []
+    rules, llm, kept = cfg.stats.get("rules", 0), cfg.stats.get("llm", 0), cfg.stats.get("kept", 0)
+    if req.use_gemini and rules:
+        out.append(f"{rules} of {rules + llm} paragraph(s) used the offline engine because no AI rewrite passed the "
+                   "accuracy checks or the providers were unavailable. Check provider status, or run again.")
+    if kept:
+        out.append(f"{kept} paragraph(s) were left unchanged because no rewrite kept every fact intact.")
+    return out
+
+
 def _run_humanize(req: HumanizeRequest, cancel: Optional[threading.Event] = None, progress=None, status=None) -> dict:
     t0 = time.time()
+    if req.use_gemini and not req.allow_offline_fallback and not has_providers():
+        raise ValueError("No AI provider is configured. Add an API key to .env and restart, or choose Offline.")
     cfg = HumanizerConfig(
         use_gemini=req.use_gemini,
         allow_offline_fallback=req.allow_offline_fallback,
@@ -200,9 +213,7 @@ def _run_humanize(req: HumanizeRequest, cancel: Optional[threading.Event] = None
                       if not m.startswith(("AI-tell", "double space"))],
         "docx_ready": docx_ready,
         "download_session": download_session,
-        "warnings": (["AI rewriting was requested, but some or all paragraphs used offline rules. "
-                      "Check provider status for configuration, authentication, or rate-limit problems."]
-                     if req.use_gemini and cfg.stats.get("rules", 0) else []),
+        "warnings": _engine_warnings(req, cfg),
         "duration": round(time.time() - t0, 2),
     }
 
